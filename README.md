@@ -24,6 +24,23 @@ Sans ecotokens, les onglets Session, Contexte et Background fonctionnent toujour
 
 ## Utilisation
 
+### Langue
+
+Le panneau propose l’anglais, le français et l’hindi. Pour choisir une langue, définissez `ECOTOKENS_PANEL_LANG` avant de lancer Claude Code :
+
+```sh
+ECOTOKENS_PANEL_LANG=fr claude
+```
+
+Dans PowerShell (Windows 10/11) :
+
+```powershell
+$env:ECOTOKENS_PANEL_LANG = 'fr'
+claude
+```
+
+Les valeurs prises en charge sont `en`, `fr` et `hi`. Sans remplacement explicite, le panneau suit la langue du système lorsqu’elle est prise en charge, puis revient à l’anglais. Les catalogues se trouvent dans `locales/`.
+
 Ouvrez ou fermez le panneau avec le bouton du pied de page ou la commande `/panel`. Les touches `1` à `6` changent d'onglet (la barre d'onglets passe à la ligne quand le panneau est étroit), `↻` relit tout, `✕` ferme.
 
 | Onglet | Contenu | Commandes |
@@ -100,4 +117,7 @@ Pour le charger depuis le dossier pendant le développement : `claude --plugin-d
 | `hooks/watch.ts` | `ecotokens watch` de l'onglet Watch |
 | `hooks/agents.ts` | Suivi des agents et des tâches en arrière-plan de l'onglet Background |
 | `hooks/bar.ts` | Jauges et dégradé de couleurs |
+| `hooks/i18n.ts` | Détection de la langue, traductions et formats localisés |
+| `hooks/paths.ts` | Construction et comparaison des chemins sous Windows et Unix |
+| `locales/*.ts` | Catalogues anglais, français et hindi |
 | `types/index.d.ts` | Contrat des valeurs gardées dans `$.state` |

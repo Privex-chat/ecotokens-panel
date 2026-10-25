@@ -25,11 +25,13 @@ import {
 } from './agents'
 import type { InFlightTask } from './agents'
 import { cells, gradient } from './bar'
-import { callKey, ecoError, ecoLog, ecoMarkQuery, ecoQueries, ecoSavedQuery, groupLine, kTokens, markLine, matchMarks, message, parsePrice, parseRows, parseSaved, stamp, turnLine, MATCH_LEAD_MS } from './eco'
+import { callKey, ecoError, ecoLog, ecoMarkQuery, ecoQueries, ecoSavedQuery, familyLabel, groupLine, kTokens, markLine, matchMarks, message, parsePrice, parseRows, parseSaved, stamp, turnLine, MATCH_LEAD_MS } from './eco'
 import type { EcoQuery, MarkRow } from './eco'
 import { GAIN_PERIODS, PURPOSE_LABELS, gainCommand, jevCommand, parseGain, parseJev, sparkline } from './gain'
 import { HANDOFF_LIST, HANDOFF_STATUS, handoffToggle, parseHandoff, parseHandoffList } from './handoff'
-import { WATCH_STATUS, parseLogTail, parseWatch, watchLogTail, watchStart, watchStop } from './watch'
+import { WATCH_STATUS, parseLogTail, parseWatch, readLogTail, watchStart, watchStop } from './watch'
+import { formatClock, formatNumber, formatPercent, formatUsd, t, tp } from './i18n'
+import { ecotokensConfigPath, metricsDatabasePath, pathBelow, relativePath, samePath } from './paths'
 
 const PANE = 'ecotokens-panel'
 const TITLE = 'ecotokens-panel'
@@ -55,12 +57,12 @@ const agents = atom({ plugin: 'ecotokens-panel', key: 'agents' } as const, null 
 
 // Add a tab here, then a case in drawTab().
 const TABS: { id: TabId; label: string }[] = [
-  { id: 'session', label: 'Session' },
-  { id: 'context', label: 'Contexte' },
-  { id: 'eco', label: 'Ecotokens' },
-  { id: 'gain', label: 'Gains' },
-  { id: 'watch', label: 'Watch' },
-  { id: 'agents', label: 'Background' },
+  { id: 'session', label: t('tab.session') },
+  { id: 'context', label: t('tab.context') },
+  { id: 'eco', label: t('tab.eco') },
+  { id: 'gain', label: t('tab.gains') },
+  { id: 'watch', label: t('tab.watch') },
+  { id: 'agents', label: t('tab.background') },
 ]
 
 // The model buttons, cheapest first. The effort buttons offer EFFORTS until /config says otherwise.
@@ -68,9 +70,9 @@ const MODELS = ['haiku', 'sonnet', 'opus', 'fable']
 const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 const WINDOW_LABELS: Record<string, string> = {
-  five_hour: 'Session (5 h)',
-  seven_day: 'Semaine (7 j)',
-  spend_limit: 'Plafond de dépense',
+  five_hour: t('window.fiveHour'),
+  seven_day: t('window.sevenDay'),
+  spend_limit: t('window.spendLimit'),
 }
 
 function snapshot(u: SessionUsage, now: number): UsageSnapshot {
@@ -82,6 +84,18 @@ function snapshot(u: SessionUsage, now: number): UsageSnapshot {
     costUsd: u.cost?.usd,
     measuredAt: now,
   }
+}
+
+async function homeDirectory($: EngineInterface) {
+  const home = await $.env.get('HOME')
+  const profile = await $.env.get('USERPROFILE')
+  if (profile && home && /^\/[a-z]\//i.test(home)) return profile
+  if (home) return home
+  if (profile) return profile
+  const drive = await $.env.get('HOMEDRIVE')
+  const homePath = await $.env.get('HOMEPATH')
+
+  return drive && homePath ? `${drive}${homePath}` : ''
 }
 
 function detail(b: SessionContextBreakdown, now: number): ContextDetail {
@@ -166,14 +180,14 @@ async function runSetting($: EngineInterface, command: 'model' | 'effort', value
     await refreshModel($)
     $.ui.toast(`/${command} ${value}`)
   } catch (error) {
-    $.ui.toast(`${command} : ${message(error)}`)
+    $.ui.toast(t('toast.settingFailed', { command, reason: message(error) }))
   }
 }
 
 // A command's output; a non-zero exit is an error carrying its stderr.
 async function output($: EngineInterface, argv: string[], timeoutMs: number, what = argv.slice(0, 2).join(' ')) {
   const ran = await $.process.run(argv, { timeoutMs })
-  if (ran.exitCode !== 0) throw new Error(ran.stderr.trim() || `${what} a échoué (${ran.exitCode})`)
+  if (ran.exitCode !== 0) throw new Error(ran.stderr.trim() || t('toast.commandFailed', { command: what, code: ran.exitCode }))
 
   return ran.stdout
 }
@@ -192,10 +206,13 @@ async function extra($: EngineInterface, argv: string[], cwd?: string) {
 async function control($: EngineInterface, what: string, argv: string[], timeoutMs: number, done: string, cwd?: string) {
   try {
     const ran = await $.process.run(argv, { cwd, timeoutMs })
-    $.ui.toast(ran.exitCode === 0 ? done : `${what} : ${ran.stderr.trim() || `échec (${ran.exitCode})`}`)
+    $.ui.toast(ran.exitCode === 0 ? done : t('toast.actionFailed', {
+      action: what,
+      reason: ran.stderr.trim() || t('toast.actionExitFailed', { action: what, code: ran.exitCode }),
+    }))
     return ran.exitCode === 0
   } catch (error) {
-    $.ui.toast(`${what} : ${message(error)}`)
+    $.ui.toast(t('toast.actionFailed', { action: what, reason: message(error) }))
     return false
   }
 }
@@ -208,7 +225,8 @@ async function refreshEco($: EngineInterface) {
   let log: EcoLog
   try {
     const { startedAt } = await $.session.usage()
-    const home = (await $.env.get('HOME')) ?? ''
+    const home = await homeDirectory($)
+    if (!home) throw new Error(t('panel.homeUnavailable'))
     const q = ecoQueries(home, startedAt, await $.session.cwd())
     const [savings, totals, jev] = await Promise.all([
       runQuery($, q.savings),
@@ -224,9 +242,9 @@ async function refreshEco($: EngineInterface) {
 
 // The databases the live lines read: without ecotokens there is nothing to draw, and nothing is run.
 async function ecoDir($: EngineInterface) {
-  const home = (await $.env.get('HOME')) ?? ''
+  const home = await homeDirectory($)
 
-  return (await $.fs.exists(`${home}/.config/ecotokens/metrics.db`)) ? home : undefined
+  return home && (await $.fs.exists(metricsDatabasePath(home))) ? home : undefined
 }
 
 // A tool call that has finished waits for the row ecotokens wrote for it.
@@ -267,9 +285,10 @@ async function matchEco($: EngineInterface) {
 // The model input price ecotokens counts avoided cost with; undefined (no cost shown) when unset or unreadable.
 async function ecoPrice($: EngineInterface) {
   try {
-    const home = (await $.env.get('HOME')) ?? ''
+    const home = await homeDirectory($)
+    if (!home) return undefined
 
-    return parsePrice(await $.fs.read(`${home}/.config/ecotokens/config.json`))
+    return parsePrice(await $.fs.read(ecotokensConfigPath(home)))
   } catch {
     return undefined
   }
@@ -335,9 +354,9 @@ async function runHandoff($: EngineInterface, argv: string[], done: string) {
 async function runHandoffSkill($: EngineInterface) {
   try {
     await $.command.run({ command: 'handoff', args: '' })
-    $.ui.toast('/handoff lancé : la session prépare le handoff.')
+    $.ui.toast(t('toast.handoffStarted'))
   } catch (error) {
-    $.ui.toast(`handoff : ${message(error)}`)
+    $.ui.toast(t('toast.actionFailed', { action: 'handoff', reason: message(error) }))
   }
 }
 
@@ -374,7 +393,7 @@ async function refreshWatch($: EngineInterface) {
     state = parseWatch(ran.stdout, ran.exitCode === 0, cwd, await $.clock.now())
     // Without its tail the log stays empty.
     const logFile = state.current?.logFile
-    const tail = logFile ? await extra($, watchLogTail(logFile)) : undefined
+    const tail = logFile ? await readLogTail(logFile) : undefined
     if (tail !== undefined) state = { ...state, log: parseLogTail(tail) }
   } catch {
     // Left empty: the tab shows that the state could not be read.
@@ -386,7 +405,7 @@ async function refreshWatch($: EngineInterface) {
 async function runWatch($: EngineInterface, start: boolean) {
   const cwd = await $.session.cwd()
   const argv = start ? watchStart(cwd) : watchStop(cwd)
-  const isDone = await control($, 'watch', argv, 15_000, start ? 'Watch démarré.' : 'Watch arrêté.', cwd)
+  const isDone = await control($, 'watch', argv, 15_000, start ? t('toast.watchStarted') : t('toast.watchStopped'), cwd)
   if (start && isDone) await $.clock.sleep(800)
   await refreshWatch($)
 }
@@ -483,7 +502,7 @@ async function toggle($: EngineInterface) {
   }
   await refresh($)
   const opened = await $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS })
-  if (!opened.isPlaced) $.ui.toast(`ecotokens-panel : ${opened.reason}`)
+  if (!opened.isPlaced) $.ui.toast(t('panel.openFailed', { reason: opened.reason }))
   else if ((await read($, tab)) === 'agents') watchAgents($)
 }
 
@@ -492,11 +511,32 @@ function levelColor(percent: number) {
 }
 
 function pct(part: number, whole: number) {
-  return whole > 0 ? `${((part / whole) * 100).toFixed(1)}%` : ''
+  return formatPercent(part, whole)
 }
 
-function shortPath(path: string) {
-  return path.replace(/^\/var\/home\/[^/]+|^\/home\/[^/]+/, '~')
+function shortPath(path: string, userHome: string) {
+  if (userHome && samePath(path, userHome)) return '~'
+  if (userHome && pathBelow(path, userHome)) {
+    const relative = relativePath(path, userHome)
+
+    return userHome.includes('\\') ? `~\\${relative.replaceAll('/', '\\')}` : `~/${relative}`
+  }
+
+  return path
+    .replace(/^\/var\/home\/[^/]+|^\/home\/[^/]+/, '~')
+    .replace(/^[A-Z]:[\\/]Users[\\/][^\\/]+/i, '~')
+}
+
+function shortenWatchedPath(line: string, cwd: string) {
+  const normalizedLine = line.replaceAll('\\', '/')
+  const normalizedCwd = cwd.replaceAll('\\', '/').replace(/\/+$/, '')
+  const windowsPath = /^[A-Z]:\//i.test(normalizedCwd) || cwd.includes('\\')
+  const searchedLine = windowsPath ? normalizedLine.toLowerCase() : normalizedLine
+  const searchedCwd = windowsPath ? normalizedCwd.toLowerCase() : normalizedCwd
+  const index = searchedLine.indexOf(`${searchedCwd}/`)
+  if (index < 0) return line
+
+  return `${normalizedLine.slice(0, index)}~/${normalizedLine.slice(index + normalizedCwd.length + 1)}`
 }
 
 // The glyphs /context draws: full, partly full, empty.
@@ -506,26 +546,26 @@ function square(fullness: number, isFilled: boolean) {
 }
 
 function clock(iso: string) {
-  const d = new Date(stamp(iso))
-  const two = (n: number) => String(n).padStart(2, '0')
-
-  return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`
+  return formatClock(stamp(iso))
 }
 
 function ageLabel(hours: number) {
-  return hours < 1 ? 'il y a < 1 h' : hours < 48 ? `il y a ${hours} h` : `il y a ${Math.floor(hours / 24)} j`
+  if (hours < 1) return t('duration.lessThanHourAgo')
+  if (hours < 48) return tp('duration.hoursAgo', hours)
+
+  return tp('duration.daysAgo', Math.floor(hours / 24))
 }
 
 function untilReset(resetsAt: string | undefined, now: number) {
   if (!resetsAt) return ''
   const ms = Date.parse(resetsAt) - now
-  if (!(ms > 0)) return 'réinitialisation imminente'
+  if (!(ms > 0)) return t('duration.resetImminent')
   const min = Math.round(ms / 60_000)
   const d = Math.floor(min / 1440)
   const h = Math.floor((min % 1440) / 60)
   const m = min % 60
-  const parts = d > 0 ? `${d} j ${h} h` : h > 0 ? `${h} h ${m} min` : `${m} min`
-  return `réinit. dans ${parts}`
+  const parts = d > 0 ? [tp('duration.days', d), h > 0 ? tp('duration.hours', h) : ''].filter(Boolean).join(' ') : h > 0 ? `${tp('duration.hours', h)} ${tp('duration.minutes', m)}` : tp('duration.minutes', m)
+  return t('duration.resetIn', { duration: parts })
 }
 
 export const register: Register = (on, options) => {
@@ -535,7 +575,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'panel',
-      description: 'Ouvre ou ferme le panneau ecotokens-panel (contexte, quota)',
+      description: t('command.panelDescription'),
     })
     await refresh($)
 
@@ -545,7 +585,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'panel' }, async $ => {
     await toggle($)
 
-    return { text: 'Panneau ecotokens-panel basculé.' }
+    return { text: t('command.panelToggled') }
   })
 
   // Keep the figures fresh: the engine raises this whenever context, quota or cost moves.
@@ -696,6 +736,7 @@ export const register: Register = (on, options) => {
     const agentsState = current === 'agents' ? await read($, agents) : null
     const sessionId = await $.session.id()
     const now = await $.clock.now()
+    const home = await homeDirectory($)
     const width = Math.max(10, e.props.bodyColumns - 2)
     const barWidth = Math.max(8, width - 8)
 
@@ -740,7 +781,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" justifyContent="space-between">
           <Text bold>{label}</Text>
           <Text color={percent === undefined ? undefined : levelColor(percent)}>
-            {percent === undefined ? '—' : `${percent}%`}
+            {percent === undefined ? '—' : formatPercent(percent, 100)}
           </Text>
         </Box>
         <Box flexDirection="row">
@@ -753,28 +794,28 @@ export const register: Register = (on, options) => {
     )
 
     const usageSection = () => {
-      if (!u) return <Text dimColor>Aucune mesure pour l'instant.</Text>
+      if (!u) return <Text dimColor>{t('panel.noneMeasurement')}</Text>
       const ctxDetail =
         u.contextTokens === undefined
-          ? `fenêtre de ${kTokens(u.contextWindow)} tokens, pas encore de réponse`
-          : `${kTokens(u.contextTokens)} / ${kTokens(u.contextWindow)} tokens`
+          ? t('panel.beforeFirstReply', { tokens: kTokens(u.contextWindow), unit: t('unit.tokens') })
+          : t('panel.contextTokens', { used: kTokens(u.contextTokens), total: kTokens(u.contextWindow), unit: t('unit.tokens') })
 
       return (
         <Box flexDirection="column">
           <Text color="claude" bold>
-            Fenêtre de contexte
+            {t('panel.contextWindow')}
           </Text>
-          {meter('Utilisé', u.contextPercent, ctxDetail)}
+          {meter(t('panel.used'), u.contextPercent, ctxDetail)}
 
           <Box flexDirection="row" flexWrap="wrap" gap={1}>
             <Text color="claude" bold>
-              Quota de l'abonnement
+              {t('panel.subscriptionQuota')}
             </Text>
-            {u.costUsd !== undefined && <Text dimColor>· Coût équivalent API : ${u.costUsd.toFixed(2)}</Text>}
+            {u.costUsd !== undefined && <Text dimColor>{t('panel.apiEquivalentCost', { amount: formatUsd(u.costUsd) })}</Text>}
           </Box>
           {u.rateLimits.length === 0 ? (
             <Box marginBottom={1}>
-              <Text dimColor>Pas encore de relevé (il arrive avec la prochaine réponse du modèle).</Text>
+              <Text dimColor>{t('panel.noQuotaMeasurement')}</Text>
             </Box>
           ) : (
             u.rateLimits.map(r =>
@@ -788,35 +829,43 @@ export const register: Register = (on, options) => {
     // `h` is the JSX factory (tsconfig `jsxFactory`): never name a variable `h` where JSX is drawn.
     const handoffPanel = () => {
       const hs = handoffState
-      if (!hs) return <Text dimColor>Handoff : état illisible (ecotokens est-il installé ?).</Text>
-      const setup = hs.hookInstalled && hs.skillsInstalled ? 'hook et skills en place' : 'installation incomplète'
+      if (!hs) return <Text dimColor>{t('panel.handoffUnreadable')}</Text>
+      const setup = hs.hookInstalled && hs.skillsInstalled ? t('panel.handoffSetupReady') : t('panel.handoffSetupIncomplete')
 
       return (
         <Box flexDirection="column">
-          {line('État', hs.enabled ? 'activé' : 'désactivé', hs.enabled ? 'success' : undefined)}
+          {line(t('panel.state'), hs.enabled ? t('panel.enabled') : t('panel.disabled'), hs.enabled ? 'success' : undefined)}
           <Text dimColor>{setup}</Text>
-          {line('Ici', `${hs.pending} en attente · ${hs.consumed} repris`)}
+          {line(t('panel.here'), t('panel.handoffCounts', { pending: formatNumber(hs.pending), consumed: formatNumber(hs.consumed) }))}
           <Text dimColor>
-            Périmé après {hs.staleHours} h · {hs.maxChars} car. max · gardé {hs.retentionDays} j · {hs.injections} injection
-            {hs.injections > 1 ? 's' : ''}
+            {t('panel.handoffRetention', {
+              hours: formatNumber(hs.staleHours),
+              chars: formatNumber(hs.maxChars),
+              days: formatNumber(hs.retentionDays),
+              injections: tp('count.injections', hs.injections),
+            })}
           </Text>
           <Box flexDirection="column" marginTop={1}>
             {hs.entries.length === 0 ? (
-              <Text dimColor>Aucun handoff enregistré.</Text>
+              <Text dimColor>{t('panel.noHandoffs')}</Text>
             ) : (
-              hs.entries.map(en => (
-                <Box flexDirection="column">
-                  {line(
-                    `${en.id.slice(0, 8)}${en.id === sessionId ? ' (cette session)' : ''}`,
-                    `${ageLabel(en.ageHours)} · ${en.status}${en.stale ? ' (périmé)' : ''}`,
-                    en.status === 'pending' ? 'success' : undefined,
-                    en.status !== 'pending',
-                  )}
-                  <Text dimColor wrap="truncate-end">
-                    {en.objective || '—'}
-                  </Text>
-                </Box>
-              ))
+              hs.entries.map(en => {
+                const status = en.status === 'pending' ? t('handoff.status.pending') : en.status === 'consumed' ? t('handoff.status.consumed') : en.status
+
+                return (
+                  <Box flexDirection="column">
+                    {line(
+                      `${en.id.slice(0, 8)}${en.id === sessionId ? ` ${t('panel.thisSession')}` : ''}`,
+                      `${ageLabel(en.ageHours)} · ${status}${en.stale ? ` ${t('panel.stale')}` : ''}`,
+                      en.status === 'pending' ? 'success' : undefined,
+                      en.status !== 'pending',
+                    )}
+                    <Text dimColor wrap="truncate-end">
+                      {en.objective || '—'}
+                    </Text>
+                  </Box>
+                )
+              })
             )}
           </Box>
           <Box flexDirection="row" gap={1}>
@@ -824,12 +873,12 @@ export const register: Register = (on, options) => {
               key="handoff-toggle"
               hotkey="h"
               variant={hs.enabled ? 'secondary' : 'primary'}
-              label={hs.enabled ? 'Désactiver' : 'Activer'}
+              label={hs.enabled ? t('panel.disable') : t('panel.enable')}
               onPress={() =>
                 void runHandoff(
                   $,
                   handoffToggle(!hs.enabled),
-                  hs.enabled ? 'Handoff désactivé.' : 'Handoff activé.',
+                  hs.enabled ? t('toast.handoffDisabled') : t('toast.handoffEnabled'),
                 )
               }
             />
@@ -849,7 +898,7 @@ export const register: Register = (on, options) => {
       try {
         return handoffPanel()
       } catch {
-        return <Text dimColor>Handoff : affichage impossible.</Text>
+        return <Text dimColor>{t('panel.handoffDisplayFailed')}</Text>
       }
     }
 
@@ -880,8 +929,8 @@ export const register: Register = (on, options) => {
       const alias = MODELS.find(m => currentModel?.toLowerCase().includes(m.toLowerCase()))
       return (
         <Box flexDirection="column" gap={1}>
-          {choice('Modèle', MODELS, alias, 'model')}
-          {choice('Effort', efforts, currentEffort, 'effort')}
+          {choice(t('panel.model'), MODELS, alias, 'model')}
+          {choice(t('panel.effort'), efforts, currentEffort, 'effort')}
           {currentModel && <Text dimColor wrap="truncate-end">{currentModel}</Text>}
         </Box>
       )
@@ -892,7 +941,7 @@ export const register: Register = (on, options) => {
         {settingsZone()}
         {usageSection()}
         <Box flexDirection="column">
-          {section('Handoff')}
+          {section(t('panel.handoff'))}
           {safeHandoffPanel()}
         </Box>
       </Box>
@@ -914,7 +963,7 @@ export const register: Register = (on, options) => {
     )
 
     const contextTab = () => {
-      if (!c) return <Text dimColor>Pas encore de détail : appuyez sur ↻.</Text>
+      if (!c) return <Text dimColor>{t('panel.noContextDetail')}</Text>
       const used = c.categories.filter(r => r.kind === 'used')
       const reserved = c.categories.filter(r => r.kind !== 'used' && r.kind !== 'deferred')
       const deferred = c.categories.filter(r => r.kind === 'deferred')
@@ -925,12 +974,12 @@ export const register: Register = (on, options) => {
 
       return (
         <Box flexDirection="column">
-          {meter(c.model, c.percentage, `${kTokens(c.totalTokens)} / ${kTokens(c.maxTokens)} tokens`)}
+          {meter(c.model, c.percentage, t('panel.contextTokens', { used: kTokens(c.totalTokens), total: kTokens(c.maxTokens), unit: t('unit.tokens') }))}
           <Box marginBottom={1}>
             <Text dimColor>
               {toCompact === undefined
-                ? 'Auto-compactage désactivé'
-                : `Auto-compactage à ${kTokens(c.autoCompactThreshold ?? 0)} · encore ${kTokens(toCompact)}`}
+                ? t('panel.autoCompactDisabled')
+                : t('panel.autoCompactAt', { threshold: kTokens(c.autoCompactThreshold ?? 0), remaining: kTokens(toCompact) })}
             </Text>
           </Box>
 
@@ -946,67 +995,67 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
 
-          {section('Répartition')}
+          {section(t('panel.distribution'))}
           <Box flexDirection="column" marginBottom={1}>
             {[...used, ...reserved].map(r =>
               line(`● ${r.name}`, `${kTokens(r.tokens)} · ${pct(r.tokens, c.maxTokens)}`, r.color, r.kind !== 'used'),
             )}
-            {deferred.map(r => line(`○ ${r.name} (à la demande)`, kTokens(r.tokens), undefined, true))}
+            {deferred.map(r => line(`○ ${r.name} ${t('panel.onDemand')}`, kTokens(r.tokens), undefined, true))}
           </Box>
 
           {c.api && (
             <Box flexDirection="column" marginBottom={1}>
-              {section('Dernière requête')}
-              {line('Lu depuis le cache', kTokens(c.api.cacheRead))}
-              {line('Écrit en cache', kTokens(c.api.cacheWrite))}
-              {line('Entrée hors cache', kTokens(c.api.input))}
-              {line('Sortie', kTokens(c.api.output))}
+              {section(t('panel.lastRequest'))}
+              {line(t('panel.cacheRead'), kTokens(c.api.cacheRead))}
+              {line(t('panel.cacheWrite'), kTokens(c.api.cacheWrite))}
+              {line(t('panel.uncachedInput'), kTokens(c.api.input))}
+              {line(t('panel.output'), kTokens(c.api.output))}
             </Box>
           )}
 
           {c.memoryFiles.length > 0 && (
             <Box flexDirection="column" marginBottom={1}>
-              {section('Fichiers mémoire')}
-              {c.memoryFiles.slice(0, 8).map(f => line(shortPath(f.path), kTokens(f.tokens)))}
+              {section(t('panel.memoryFiles'))}
+              {c.memoryFiles.slice(0, 8).map(f => line(shortPath(f.path, home), kTokens(f.tokens)))}
             </Box>
           )}
 
           {c.mcpServers.length > 0 && (
             <Box flexDirection="column" marginBottom={1}>
-              {section('Serveurs MCP')}
+              {section(t('panel.mcpServers'))}
               {c.mcpServers.map(s =>
-                line(`${s.server} (${s.loaded}/${s.tools} outils)`, s.loaded > 0 ? kTokens(s.tokens) : '—', undefined, s.loaded === 0),
+                line(`${s.server} (${formatNumber(s.loaded)}/${formatNumber(s.tools)} ${t('panel.tools')})`, s.loaded > 0 ? kTokens(s.tokens) : '—', undefined, s.loaded === 0),
               )}
             </Box>
           )}
 
           <Box flexDirection="column">
-            {section('Autres')}
-            {c.skills && line(`Skills (${c.skills.included}/${c.skills.total} listés)`, kTokens(c.skills.tokens))}
-            {c.agents.count > 0 && line(`Agents (${c.agents.count})`, kTokens(c.agents.tokens))}
+            {section(t('panel.other'))}
+            {c.skills && line(t('panel.skillsListed', { included: formatNumber(c.skills.included), total: formatNumber(c.skills.total) }), kTokens(c.skills.tokens))}
+            {c.agents.count > 0 && line(`${t('panel.agents')} (${formatNumber(c.agents.count)})`, kTokens(c.agents.tokens))}
           </Box>
         </Box>
       )
     }
 
     const ecoTab = () => {
-      if (!log) return <Text dimColor>Pas encore de relevé : appuyez sur ↻.</Text>
-      if (log.error) return <Text color="error">Lecture impossible : {log.error}</Text>
+      if (!log) return <Text dimColor>{t('panel.ecoNoMeasurement')}</Text>
+      if (log.error) return <Text color="error">{t('panel.readFailed', { reason: log.error })}</Text>
 
       return (
         <Box flexDirection="column">
           <Box marginBottom={1}>
             <Text dimColor>
-              Session : {kTokens(log.totalSaved)} tokens économisés sur {log.totalFiltered} sorties filtrées
+              {t('panel.ecoSessionSummary', { saved: kTokens(log.totalSaved), filtered: formatNumber(log.totalFiltered), unit: t('unit.tokens') })}
             </Text>
           </Box>
 
-          {section('5 dernières économies')}
+          {section(t('panel.latestSavings'))}
           <Box flexDirection="column" marginBottom={1}>
-            {log.savings.length === 0 && <Text dimColor>Aucune pour l'instant.</Text>}
+            {log.savings.length === 0 && <Text dimColor>{t('panel.noneYet')}</Text>}
             {log.savings.map(g => (
               <Box flexDirection="column" marginBottom={1}>
-                {line(`−${kTokens(g.before - g.after)} tokens (${Math.round(g.pct)}%)`, clock(g.at), 'success')}
+                  {line(t('panel.savingTokens', { tokens: kTokens(g.before - g.after), percent: formatNumber(Math.round(g.pct)), unit: t('unit.tokens') }), clock(g.at), 'success')}
                 <Text wrap="truncate-end">{g.what}</Text>
                 <Text dimColor wrap="truncate-end">
                   {g.how}
@@ -1015,16 +1064,16 @@ export const register: Register = (on, options) => {
             ))}
           </Box>
 
-          {section('5 derniers appels à Jev')}
+          {section(t('panel.latestJevCalls'))}
           <Box flexDirection="column">
-            {log.jev.length === 0 && <Text dimColor>Aucun pour l'instant.</Text>}
+            {log.jev.length === 0 && <Text dimColor>{t('panel.noneYet')}</Text>}
             {log.jev.map(j => (
               <Box flexDirection="column" marginBottom={1}>
                 {line(`${j.ok ? '✓' : '✗'} ${j.title}`, clock(j.at), j.ok ? 'success' : 'error')}
                 <Text wrap="truncate-end">{j.what}</Text>
                 <Text dimColor wrap="truncate-end">
                   {j.error ? `${j.error} · ` : ''}
-                  {j.latencyMs} ms · coût Jev {kTokens(j.inputTokens)} → {kTokens(j.outputTokens)} tokens
+                  {formatNumber(j.latencyMs)} ms {t('panel.jevCost', { input: kTokens(j.inputTokens), output: kTokens(j.outputTokens), unit: t('unit.tokens') })}
                 </Text>
               </Box>
             ))}
@@ -1034,7 +1083,7 @@ export const register: Register = (on, options) => {
     }
 
     const gainRow = (r: { name: string; count: number; before: number; after: number }, label: string) =>
-      line(label, `−${kTokens(r.before - r.after)} · ${pct(r.before - r.after, r.before)} · ${r.count}×`)
+      line(label, `−${kTokens(r.before - r.after)} · ${pct(r.before - r.after, r.before)} · ${formatNumber(r.count)}×`)
 
     const gainTab = () => {
       const gs = gainState
@@ -1054,7 +1103,7 @@ export const register: Register = (on, options) => {
           ))}
         </Box>
       )
-      if (!gs) return <Box flexDirection="column" gap={1}>{periods}<Text dimColor>Pas encore de relevé : appuyez sur ↻.</Text></Box>
+      if (!gs) return <Box flexDirection="column" gap={1}>{periods}<Text dimColor>{t('panel.ecoNoMeasurement')}</Text></Box>
       const g = gs.gain
       const j = gs.jev
 
@@ -1063,21 +1112,21 @@ export const register: Register = (on, options) => {
           {periods}
           {gs.project && (
             <Text dimColor wrap="truncate-start">
-              Workspace : {shortPath(gs.project)}
+              {t('panel.workspace')}: {shortPath(gs.project, home)}
             </Text>
           )}
 
           <Box flexDirection="column">
-            {section('Gains (ecotokens gain)')}
-            {gs.gainError && <Text color="error">Lecture impossible : {gs.gainError}</Text>}
+            {section(t('panel.gainTitle'))}
+            {gs.gainError && <Text color="error">{t('panel.readFailed', { reason: gs.gainError })}</Text>}
             {g && (
               <Box flexDirection="column">
-                {meter('Tokens économisés', Math.round(g.savingsPct), `${kTokens(g.before - g.after)} sur ${kTokens(g.before)} · ${g.interceptions} sorties`)}
-                <Text dimColor>Coût évité : ${g.costAvoidedUsd.toFixed(2)}</Text>
+                {meter(t('panel.tokensSaved'), Math.round(g.savingsPct), t('panel.savedOfTotal', { saved: kTokens(g.before - g.after), total: kTokens(g.before), count: formatNumber(g.interceptions) }))}
+                <Text dimColor>{t('panel.costAvoided', { amount: formatUsd(g.costAvoidedUsd) })}</Text>
                 {g.families.length > 0 && (
                   <Box flexDirection="column" marginTop={1}>
-                    <Text bold>Par famille</Text>
-                    {g.families.slice(0, 6).map(r => gainRow(r, r.name))}
+                    <Text bold>{t('panel.byFamily')}</Text>
+                    {g.families.slice(0, 6).map(r => gainRow(r, familyLabel(r.name)))}
                   </Box>
                 )}
               </Box>
@@ -1085,13 +1134,13 @@ export const register: Register = (on, options) => {
           </Box>
 
           <Box flexDirection="column">
-            {section('Jev (ecotokens jev)')}
-            {gs.jevError && <Text color="error">Lecture impossible : {gs.jevError}</Text>}
+            {section(t('panel.jevTitle'))}
+            {gs.jevError && <Text color="error">{t('panel.readFailed', { reason: gs.jevError })}</Text>}
             {j && (
               <Box flexDirection="column">
-                {line('Appels', `${j.calls} · ${j.ok} réussis · ${j.fallbacks} repli${j.fallbacks > 1 ? 's' : ''}`, j.ok < j.calls ? 'warning' : undefined)}
-                {line('Coût', `$${j.costUsd.toFixed(4)} · ${kTokens(j.inputTokens)} → ${kTokens(j.outputTokens)}`)}
-                {line('Latence', `moy. ${j.avgLatencyMs} ms · p95 ${j.p95LatencyMs} ms`)}
+                {line(t('panel.calls'), t('panel.callsSummary', { calls: formatNumber(j.calls), successful: formatNumber(j.ok), fallbacks: tp('count.fallbacks', j.fallbacks) }), j.ok < j.calls ? 'warning' : undefined)}
+                {line(t('panel.cost'), `${formatUsd(j.costUsd, 4)} · ${kTokens(j.inputTokens)} → ${kTokens(j.outputTokens)}`)}
+                {line(t('panel.latency'), t('panel.averageLatency', { average: formatNumber(j.avgLatencyMs), p95: formatNumber(j.p95LatencyMs) }))}
                 {j.timeline.length > 0 && (
                   <Text color="claude" wrap="truncate-start">
                     {sparkline(j.timeline, width)}
@@ -1099,11 +1148,11 @@ export const register: Register = (on, options) => {
                 )}
                 {j.purposes.length > 0 && (
                   <Box flexDirection="column" marginTop={1}>
-                    <Text bold>Par usage</Text>
+                    <Text bold>{t('panel.byPurpose')}</Text>
                     {j.purposes.map(p =>
                       line(
                         PURPOSE_LABELS[p.name] ?? p.name,
-                        `${p.calls}× · ${p.avgLatencyMs} ms`,
+                        `${formatNumber(p.calls)}× · ${formatNumber(p.avgLatencyMs)} ms`,
                         p.ok < p.calls ? 'warning' : undefined,
                       ),
                     )}
@@ -1111,8 +1160,8 @@ export const register: Register = (on, options) => {
                 )}
                 {j.errors.length > 0 && (
                   <Box flexDirection="column" marginTop={1}>
-                    <Text bold>Erreurs</Text>
-                    {j.errors.map(e => line(e.kind, `${e.count}×`, 'error'))}
+                    <Text bold>{t('panel.errors')}</Text>
+                    {j.errors.map(e => line(e.kind, `${formatNumber(e.count)}×`, 'error'))}
                   </Box>
                 )}
               </Box>
@@ -1124,20 +1173,20 @@ export const register: Register = (on, options) => {
 
     const watchTab = () => {
       const ws = watchState
-      if (!ws) return <Text dimColor>Watch : état illisible (ecotokens est-il installé ?).</Text>
+      if (!ws) return <Text dimColor>{t('panel.watchUnreadable')}</Text>
       const cur = ws.current
 
       return (
         <Box flexDirection="column">
-          {section('Ce dossier')}
+          {section(t('panel.thisFolder'))}
           <Text dimColor wrap="truncate-start">
-            {shortPath(ws.cwd)}
+            {shortPath(ws.cwd, home)}
           </Text>
-          {line('État', cur ? 'en cours' : 'arrêté', cur ? 'success' : undefined)}
+          {line(t('panel.state'), cur ? t('panel.running') : t('panel.stopped'), cur ? 'success' : undefined)}
           {cur && (
             <Text dimColor>
-              PID {cur.pid} · {cur.sessions} session{cur.sessions > 1 ? 's' : ''}
-              {cur.startedAt ? ` · depuis ${clock(cur.startedAt)}` : ''}
+              PID {cur.pid === undefined ? '—' : formatNumber(cur.pid)} · {tp('count.sessions', cur.sessions)}
+              {cur.startedAt ? ` ${t('panel.since', { time: clock(cur.startedAt) })}` : ''}
             </Text>
           )}
           <Box flexDirection="row" gap={1} marginTop={1}>
@@ -1145,20 +1194,20 @@ export const register: Register = (on, options) => {
               key="watch-toggle"
               hotkey="w"
               variant={cur ? 'secondary' : 'primary'}
-              label={cur ? 'Arrêter' : 'Démarrer'}
+              label={cur ? t('panel.stop') : t('panel.start')}
               onPress={() => void runWatch($, !cur)}
             />
           </Box>
 
           {cur && (
             <Box flexDirection="column" marginTop={1}>
-              {section('Journal')}
+              {section(t('panel.log'))}
               {ws.log.length === 0 ? (
-                <Text dimColor>Rien pour l'instant.</Text>
+                <Text dimColor>{t('panel.noneYet')}</Text>
               ) : (
                 ws.log.map(l => (
                   <Text dimColor wrap="truncate-end">
-                    {l.replace(ws.cwd + '/', '')}
+                    {shortenWatchedPath(l, ws.cwd)}
                   </Text>
                 ))
               )}
@@ -1167,8 +1216,8 @@ export const register: Register = (on, options) => {
 
           {ws.others.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
-              {section('Autres dossiers surveillés')}
-              {ws.others.map(o => line(shortPath(o.path), `PID ${o.pid}`, undefined, true))}
+              {section(t('panel.otherWatchedFolders'))}
+              {ws.others.map(o => line(shortPath(o.path, home), `PID ${o.pid === undefined ? '—' : formatNumber(o.pid)}`, undefined, true))}
             </Box>
           )}
         </Box>
@@ -1180,13 +1229,13 @@ export const register: Register = (on, options) => {
       const running = isActive(r.status)
       const kind = [
         r.name ? r.type : '',
-        r.isTeammate ? 'coéquipier' : r.isBackground ? 'arrière-plan' : '',
+        r.isTeammate ? t('panel.teammate') : r.isBackground ? t('panel.background') : '',
         r.model ? shortModel(r.model) : '',
       ]
       const facts = [
         elapsedLabel(r, now),
-        `${r.toolUses} outil${r.toolUses > 1 ? 's' : ''}${running && r.lastTool ? ` (${r.lastTool})` : ''}`,
-        r.inputTokens + r.outputTokens > 0 ? `${kTokens(r.inputTokens)} → ${kTokens(r.outputTokens)} tokens` : '',
+        `${tp('count.tools', r.toolUses)}${running && r.lastTool ? ` (${r.lastTool})` : ''}`,
+        r.inputTokens + r.outputTokens > 0 ? `${kTokens(r.inputTokens)} → ${kTokens(r.outputTokens)} ${t('unit.tokens')}` : '',
         r.costUsd === undefined ? '' : costLabel(r.costUsd),
       ]
 
@@ -1215,25 +1264,25 @@ export const register: Register = (on, options) => {
     }
 
     // A shell's or a monitor's command under its description; how it ended is not told, only that it did.
-    const taskRow = (t: TaskRow) => {
-      const s = TASK_STATUS[t.status] ?? TASK_STATUS.running
-      const running = isTaskActive(t.status)
-      const facts = [taskElapsedLabel(t, now), t.agentId ? 'lancée par un agent' : '']
+    const taskRow = (task: TaskRow) => {
+      const s = TASK_STATUS[task.status] ?? TASK_STATUS.running
+      const running = isTaskActive(task.status)
+      const facts = [taskElapsedLabel(task, now), task.agentId ? t('panel.agentStartedTask') : '']
 
       return (
         <Box flexDirection="column" marginBottom={1}>
           <Box flexDirection="row" justifyContent="space-between">
             <Text bold={running} dimColor={!running} wrap="truncate-end">
-              {taskKindLabel(t.kind)}
+              {taskKindLabel(task.kind)}
             </Text>
             <Text color={s.color}>
               {s.glyph} {s.label}
             </Text>
           </Box>
-          <Text wrap="truncate-end">{t.description || t.command || '—'}</Text>
-          {t.description !== '' && t.command && (
+          <Text wrap="truncate-end">{task.description || task.command || '—'}</Text>
+          {task.description !== '' && task.command && (
             <Text dimColor wrap="truncate-end">
-              $ {t.command}
+              $ {task.command}
             </Text>
           )}
           {facts.some(Boolean) && (
@@ -1247,33 +1296,36 @@ export const register: Register = (on, options) => {
 
     const agentsTab = () => {
       const st = agentsState
-      if (!st) return <Text dimColor>Pas encore de relevé : appuyez sur ↻.</Text>
+      if (!st) return <Text dimColor>{t('panel.ecoNoMeasurement')}</Text>
       const tasks = st.tasks ?? []
       const active = st.rows.filter(r => isActive(r.status)).length + tasks.filter(t => isTaskActive(t.status)).length
 
       return (
         <Box flexDirection="column">
-          {st.error && <Text color="error">Liste des agents illisible : {st.error}</Text>}
+          {st.error && <Text color="error">{t('panel.agentListUnreadable', { reason: st.error })}</Text>}
           {st.rows.length === 0 && tasks.length === 0 ? (
-            <Text dimColor>Aucun agent ni tâche en arrière-plan dans cette session.</Text>
+            <Text dimColor>{t('panel.noAgentOrTask')}</Text>
           ) : (
             <Box flexDirection="column">
               <Box marginBottom={1}>
                 <Text dimColor>
-                  {st.rows.length} agent{st.rows.length > 1 ? 's' : ''} · {tasks.length} tâche{tasks.length > 1 ? 's' : ''} · {active} actif
-                  {active > 1 ? 's' : ''}
+                  {t('panel.agentSummary', {
+                    agents: tp('count.agents', st.rows.length),
+                    tasks: tp('count.tasks', tasks.length),
+                    active: tp('count.active', active),
+                  })}
                 </Text>
               </Box>
               {section('Agents')}
               {st.rows.length === 0 ? (
                 <Box marginBottom={1}>
-                  <Text dimColor>Aucun agent dans cette session.</Text>
+                  <Text dimColor>{t('panel.noAgents')}</Text>
                 </Box>
               ) : (
                 st.rows.map(agentRow)
               )}
-              {section('Tâches en arrière-plan')}
-              {tasks.length === 0 ? <Text dimColor>Aucune tâche en arrière-plan.</Text> : tasks.map(taskRow)}
+              {section(t('panel.backgroundTasks'))}
+              {tasks.length === 0 ? <Text dimColor>{t('panel.noBackgroundTasks')}</Text> : tasks.map(taskRow)}
             </Box>
           )}
         </Box>
@@ -1303,7 +1355,7 @@ export const register: Register = (on, options) => {
       try {
         return drawTab()
       } catch (error) {
-        return <Text color="error">Affichage impossible : {message(error)} (↻ pour relire)</Text>
+        return <Text color="error">{t('panel.renderFailed', { reason: message(error) })}</Text>
       }
     }
 

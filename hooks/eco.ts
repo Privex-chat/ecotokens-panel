@@ -1,4 +1,6 @@
 import type { EcoCall, EcoJevCall, EcoLog, EcoMark, EcoSaving, EcoTrack } from '../types'
+import { formatNumber, formatPercent, formatUsd, t as tr } from './i18n'
+import { joinPath, metricsDatabasePath } from './paths'
 
 // ecotokens keeps no session id: "this session" is every row since it started.
 // Savings are also held to the session's project (their git_root); Jev calls carry none.
@@ -24,41 +26,50 @@ export function parseRows<T>(stdout: string): T[] {
   return out === '' ? [] : (JSON.parse(out) as T[])
 }
 
-const FAMILIES: Record<string, string> = {
-  git: 'git',
-  gh: 'GitHub CLI',
-  cargo: 'Cargo',
-  grep: 'recherche',
-  fs: 'fichiers',
-  python: 'Python',
-  js: 'JS / npm',
-  network: 'réseau',
-  generic: 'shell',
+const FAMILIES: Record<string, Parameters<typeof tr>[0]> = {
+  git: 'family.git',
+  gh: 'family.gh',
+  cargo: 'family.cargo',
+  grep: 'family.grep',
+  fs: 'family.fs',
+  python: 'family.python',
+  js: 'family.js',
+  network: 'family.network',
+  generic: 'family.generic',
 }
 
-const MODES: Record<string, string> = {
-  filtered: 'Sortie filtrée (lignes inutiles retirées)',
-  summarized: 'Sortie résumée',
-  rewritten: 'Texte réécrit plus court',
+export function familyLabel(family: string) {
+  return FAMILIES[family] ? tr(FAMILIES[family]) : family
+}
+
+const MODES: Record<string, Parameters<typeof tr>[0]> = {
+  filtered: 'mode.filtered',
+  summarized: 'mode.summarized',
+  rewritten: 'mode.rewritten',
 }
 
 function baseName(path: string) {
-  return path.split('/').filter(Boolean).pop() ?? path
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path
 }
 
 // Turns ecotokens' raw record into what a person reads: the object, then the means.
 export function describeSaving(command: string, family: string, mode: string, before: number, after: number) {
   let what: string
   if (command.startsWith('Read ')) {
-    what = `Lecture du fichier ${baseName(command.slice(5).trim())}`
+    what = tr('saving.readFile', { file: baseName(command.slice(5).trim()) })
   } else if (command.startsWith('hermes-tool:')) {
-    what = `Outil Hermes ${command.slice(12)}`
+    what = tr('saving.hermesTool', { tool: command.slice(12) })
   } else {
     // `bash -c cd <dir> && real command` reads as the real command.
     const shown = command.replace(/^bash -c\s+/, '').replace(/^cd\s+\S+\s*&&\s*/, '')
-    what = `Commande ${FAMILIES[family] ?? family} : ${shown}`
+    what = tr('saving.command', { family: familyLabel(family), command: shown })
   }
-  const how = `${MODES[mode] ?? mode} · ${before} → ${after} tokens`
+  const how = tr('saving.tokens', {
+    mode: MODES[mode] ? tr(MODES[mode]) : mode,
+    before: formatNumber(before),
+    after: formatNumber(after),
+    unit: tr('unit.tokens'),
+  })
 
   return { what, how }
 }
@@ -71,45 +82,50 @@ const AGENTS: Record<string, string> = {
   'router-hardest': 'Fable',
 }
 
-const SIZES: Record<string, string> = {
-  tiny: 'très petit',
-  everyday: 'courant',
-  large: 'gros',
-  hardest: 'très difficile',
+const SIZES: Record<string, Parameters<typeof tr>[0]> = {
+  tiny: 'jev.size.tiny',
+  everyday: 'jev.size.everyday',
+  large: 'jev.size.large',
+  hardest: 'jev.size.hardest',
 }
 
 export type JevDecision = { size: string | null; confidence: number | null; followup: number | null }
 
 function prob(p: number | null) {
-  return p === null ? '' : ` (p=${p.toFixed(2)})`
+  return p === null ? '' : ` (p=${formatNumber(p, 2)})`
 }
 
 // Says what Jev was asked and what it decided, from the call and the router's own row.
 export function describeJev(purpose: string, agent: string | null, ok: boolean, d: JevDecision | null) {
   if (purpose === 'filter_lines') {
     return {
-      title: 'Filtrage IA d’une sortie trop longue',
-      what: ok ? 'Jev a choisi les lignes utiles à garder' : 'Échec : la sortie a été filtrée sans Jev',
+      title: tr('jev.filterTitle'),
+      what: ok ? tr('jev.filterSuccess') : tr('jev.filterFailure'),
     }
   }
-  if (purpose !== 'router') return { title: purpose, what: agent ?? '' }
+  if (purpose !== 'router') {
+    const purposeKey = purpose === 'code_gate' ? 'purpose.codeGate' : purpose === 'verify' ? 'purpose.verify' : undefined
 
-  const sized = d?.size ? `Message jugé ${SIZES[d.size] ?? d.size}${prob(d.confidence)}` : 'Message évalué'
-  if (!ok) return { title: 'Routage du message', what: 'Échec : traité par la session principale' }
+    return { title: purposeKey ? tr(purposeKey) : purpose, what: agent ?? '' }
+  }
+
+  const size = d?.size ? (SIZES[d.size] ? tr(SIZES[d.size]) : d.size) : undefined
+  const sized = size ? tr('jev.messageSize', { size, confidence: prob(d?.confidence ?? null) }) : tr('jev.messageRated')
+  if (!ok) return { title: tr('jev.routerTitle'), what: tr('jev.routingFailure') }
   if (agent && AGENTS[agent]) {
-    return { title: 'Routage du message', what: `${sized} → délégué à ${agent} (${AGENTS[agent]})` }
+    return { title: tr('jev.routerTitle'), what: tr('jev.delegated', { message: sized, agent, model: AGENTS[agent] }) }
   }
   if (agent === 'self (followup)') {
     return {
-      title: 'Routage du message',
-      what: `${sized}, suite de conversation${prob(d?.followup ?? null)} → gardé par la session`,
+      title: tr('jev.routerTitle'),
+      what: tr('jev.followup', { size: sized, probability: prob(d?.followup ?? null) }),
     }
   }
   if (agent === 'self (unsure)') {
-    return { title: 'Routage du message', what: `${sized}, trop incertain → gardé par la session` }
+    return { title: tr('jev.routerTitle'), what: tr('jev.uncertain', { size: sized }) }
   }
 
-  return { title: 'Routage du message', what: `${sized} → ${agent ?? 'gardé par la session'}` }
+  return { title: tr('jev.routerTitle'), what: `${sized} → ${agent ?? tr('jev.keptBySession')}` }
 }
 
 type SavingRow = {
@@ -149,7 +165,7 @@ function savedSince(startedAt: number, sessionCwd: string) {
 }
 
 export function ecoQueries(home: string, startedAt: number, sessionCwd: string): EcoQueries {
-  const dir = `${home}/.config/ecotokens`
+  const dir = joinPath(home, '.config', 'ecotokens')
   const since = quote(new Date(startedAt).toISOString())
   const saved = savedSince(startedAt, sessionCwd)
 
@@ -236,7 +252,7 @@ export function ecoError(error: unknown, now: number): EcoLog {
 }
 
 export function kTokens(n: number) {
-  return n >= 1000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : String(n)
+  return n >= 1000 ? `${formatNumber(n / 1000, n >= 100_000 ? 0 : 1)}k` : formatNumber(n)
 }
 
 // ecotokens stamps nanoseconds; Date reads milliseconds.
@@ -273,7 +289,7 @@ export type MarkRow = {
 // The rows that saved something since `since`, oldest first.
 export function ecoMarkQuery(home: string, since: number, sessionCwd: string): EcoQuery {
   return sqlite(
-    `${home}/.config/ecotokens/metrics.db`,
+    metricsDatabasePath(home),
     `SELECT id, timestamp, substr(replace(replace(command, char(10), ' '), char(13), ' '), 1, 200) AS command,
             length(command) > 200 AS cut, tokens_before, tokens_after, mode
        FROM interceptions WHERE ${savedSince(since, sessionCwd)} AND mode != 'rewritten' ORDER BY timestamp LIMIT 300`,
@@ -341,17 +357,13 @@ function costPart(saved: number, price: number | undefined) {
   if (price === undefined || saved <= 0) return undefined
   const usd = (saved / 1_000_000) * price
 
-  return usd < 0.01 ? '< $0.01' : `≈ $${usd.toFixed(2)}`
-}
-
-function percent(before: number, saved: number) {
-  return before > 0 ? Math.round((saved / before) * 100) : 0
+  return usd < 0.01 ? `< ${formatUsd(0.01)}` : `≈ ${formatUsd(usd)}`
 }
 
 function savingParts(t: EcoTotals, price: number | undefined) {
   const saved = t.before - t.after
 
-  return [`−${kTokens(saved)} tokens (−${percent(t.before, saved)} %)`, costPart(saved, price)].filter(Boolean) as string[]
+  return [tr('transcript.saving', { tokens: kTokens(saved), percent: formatPercent(saved, t.before, 0), unit: tr('unit.tokens') }), costPart(saved, price)].filter(Boolean) as string[]
 }
 
 function sum(marks: EcoMark[]): EcoTotals {
@@ -371,7 +383,7 @@ export function groupLine(marks: EcoMark[], price?: number) {
 // The rows that saved something since `since` (Rewritten rows excluded, as `ecotokens gain` does), summed.
 export function ecoSavedQuery(home: string, since: number, sessionCwd: string): EcoQuery {
   return sqlite(
-    `${home}/.config/ecotokens/metrics.db`,
+    metricsDatabasePath(home),
     `SELECT sum(tokens_before) AS before, sum(tokens_after) AS after
        FROM interceptions WHERE ${savedSince(since, sessionCwd)} AND mode != 'rewritten'`,
   )
@@ -387,7 +399,7 @@ export function parseSaved(stdout: string): EcoTotals {
 export function turnLine(turn: EcoTotals, session: EcoTotals, price?: number) {
   if (turn.before - turn.after <= 0) return undefined
   const sessionSaved = session.before - session.after
-  const sessionPart = sessionSaved > 0 ? [`session −${kTokens(sessionSaved)}`, costPart(sessionSaved, price)] : []
+  const sessionPart = sessionSaved > 0 ? [tr('transcript.sessionSaved', { tokens: kTokens(sessionSaved), unit: tr('unit.tokens') }), costPart(sessionSaved, price)] : []
 
   return ['ecotokens', ...savingParts(turn, price), ...sessionPart].filter(Boolean).join(' · ')
 }
