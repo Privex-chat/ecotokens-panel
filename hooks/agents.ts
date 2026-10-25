@@ -2,19 +2,19 @@ import type { AgentInfo, AgentSpawnInput, TurnCompleteInput } from 'claude-code'
 
 import { kTokens } from './eco'
 import type { AgentRow, AgentRunStatus, TaskRow, TaskRunStatus } from '../types'
-import { formatNumber, formatUsd, t as tr, tp } from './i18n'
+import { formatInteger, formatNumber, formatUsd, t as tr, tp } from './i18n'
 
 // What the Agents tab keeps: the newest rows, the running ones first.
 const MAX_ROWS = 30
 
-export const AGENT_STATUS: Record<AgentRunStatus, { glyph: string; label: string; color?: string }> = {
-  pending: { glyph: '◌', label: tr('status.agent.pending') },
-  running: { glyph: '●', label: tr('status.agent.running'), color: 'claude' },
-  waiting: { glyph: '◌', label: tr('status.agent.waiting'), color: 'warning' },
-  idle: { glyph: '○', label: tr('status.agent.idle') },
-  completed: { glyph: '✓', label: tr('status.agent.completed'), color: 'success' },
-  failed: { glyph: '✗', label: tr('status.agent.failed'), color: 'error' },
-  killed: { glyph: '■', label: tr('status.agent.killed'), color: 'warning' },
+export const AGENT_STATUS: Record<AgentRunStatus, { glyph: string; label: Parameters<typeof tr>[0]; color?: string }> = {
+  pending: { glyph: '◌', label: 'status.agent.pending' },
+  running: { glyph: '●', label: 'status.agent.running', color: 'claude' },
+  waiting: { glyph: '◌', label: 'status.agent.waiting', color: 'warning' },
+  idle: { glyph: '○', label: 'status.agent.idle' },
+  completed: { glyph: '✓', label: 'status.agent.completed', color: 'success' },
+  failed: { glyph: '✗', label: 'status.agent.failed', color: 'error' },
+  killed: { glyph: '■', label: 'status.agent.killed', color: 'warning' },
 }
 
 export function isActive(status: AgentRunStatus) {
@@ -184,9 +184,9 @@ export function durationLabel(ms: number) {
   const s = Math.max(0, Math.round(ms / 1000))
   if (s < 60) return tp('duration.seconds', s)
   const m = Math.floor(s / 60)
-  if (m < 60) return tr('duration.minutesSeconds', { minutes: formatNumber(m), seconds: formatNumber(s % 60) })
+  if (m < 60) return tr('duration.minutesSeconds', { minutes: formatNumber(m), seconds: formatInteger(s % 60, 2) })
 
-  return tr('duration.hoursMinutes', { hours: formatNumber(Math.floor(m / 60)), minutes: formatNumber(m % 60) })
+  return tr('duration.hoursMinutes', { hours: formatNumber(Math.floor(m / 60)), minutes: formatInteger(m % 60, 2) })
 }
 
 // While it runs: the time since it started. Once it ended: its last run's length.
@@ -206,22 +206,22 @@ export function shortModel(model: string) {
 // seen starting in its tool's result (Bash's `backgroundTaskId`, Monitor's `taskId`), stopped by
 // TaskStop, and the classic Stop events carry what is still in flight, so a task missing there has ended.
 
-export const TASK_STATUS: Record<TaskRunStatus, { glyph: string; label: string; color?: string }> = {
-  pending: { glyph: '◌', label: tr('status.task.pending') },
-  running: { glyph: '●', label: tr('status.task.running'), color: 'claude' },
-  ended: { glyph: '◇', label: tr('status.task.ended') },
-  killed: { glyph: '■', label: tr('status.task.killed'), color: 'warning' },
+export const TASK_STATUS: Record<TaskRunStatus, { glyph: string; label: Parameters<typeof tr>[0]; color?: string }> = {
+  pending: { glyph: '◌', label: 'status.task.pending' },
+  running: { glyph: '●', label: 'status.task.running', color: 'claude' },
+  ended: { glyph: '◇', label: 'status.task.ended' },
+  killed: { glyph: '■', label: 'status.task.killed', color: 'warning' },
 }
 
-const TASK_KINDS: Record<string, string> = {
-  shell: 'Shell',
-  monitor: 'Monitor',
-  workflow: 'Workflow',
-  remote_agent: tr('task.remoteAgent'),
+const TASK_KINDS: Record<string, Parameters<typeof tr>[0]> = {
+  shell: 'task.kind.shell',
+  monitor: 'task.kind.monitor',
+  workflow: 'task.kind.workflow',
+  remote_agent: 'task.remoteAgent',
 }
 
 export function taskKindLabel(kind: string) {
-  return TASK_KINDS[kind] ?? kind
+  return TASK_KINDS[kind] ? tr(TASK_KINDS[kind]) : kind
 }
 
 export const isTaskActive = (status: TaskRunStatus) => status === 'pending' || status === 'running'

@@ -1,7 +1,7 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register, SessionContextBreakdown, SessionUsage, Timer, ToolCallInput } from 'claude-code'
 
-import type { AgentRow, AgentsState, TaskRow, ContextDetail, EcoLog, EcoMark, EcoTrack, EffortLevel, GainPeriod, GainState, HandoffState, TabId, UsageSnapshot, WatchState } from '../types'
+import type { AgentRow, AgentsState, TaskRow, ContextDetail, EcoLog, EcoMark, EcoSetup, EcoTrack, EffortLevel, GainPeriod, GainState, HandoffState, TabId, UsageSnapshot, WatchState } from '../types'
 import {
   AGENT_STATUS,
   TASK_STATUS,
@@ -27,11 +27,11 @@ import type { InFlightTask } from './agents'
 import { cells, gradient } from './bar'
 import { callKey, ecoError, ecoLog, ecoMarkQuery, ecoQueries, ecoSavedQuery, familyLabel, groupLine, kTokens, markLine, matchMarks, message, parsePrice, parseRows, parseSaved, stamp, turnLine, MATCH_LEAD_MS } from './eco'
 import type { EcoQuery, MarkRow } from './eco'
-import { GAIN_PERIODS, PURPOSE_LABELS, gainCommand, jevCommand, parseGain, parseJev, sparkline } from './gain'
+import { GAIN_PERIODS, gainCommand, jevCommand, parseGain, parseJev, purposeLabel, sparkline } from './gain'
 import { HANDOFF_LIST, HANDOFF_STATUS, handoffToggle, parseHandoff, parseHandoffList } from './handoff'
-import { WATCH_STATUS, parseLogTail, parseWatch, readLogTail, watchStart, watchStop } from './watch'
-import { formatClock, formatNumber, formatPercent, formatUsd, t, tp } from './i18n'
-import { ecotokensConfigPath, metricsDatabasePath, pathBelow, relativePath, samePath } from './paths'
+import { WATCH_STATUS, parseLogTail, parseWatch, tailLogContents, watchStart, watchStop } from './watch'
+import { configureLocale, formatClock, formatNumber, formatPercent, formatUsd, t, tp } from './i18n'
+import { ecotokensConfigDirectory, ecotokensConfigPath, joinPath, metricsDatabasePath, pathBelow, relativePath, samePath, type EcotokensPathEnvironment } from './paths'
 
 const PANE = 'ecotokens-panel'
 const TITLE = 'ecotokens-panel'
@@ -56,23 +56,23 @@ const effortOptions = atom({ plugin: 'ecotokens-panel', key: 'effortOptions' } a
 const agents = atom({ plugin: 'ecotokens-panel', key: 'agents' } as const, null as AgentsState | null)
 
 // Add a tab here, then a case in drawTab().
-const TABS: { id: TabId; label: string }[] = [
-  { id: 'session', label: t('tab.session') },
-  { id: 'context', label: t('tab.context') },
-  { id: 'eco', label: t('tab.eco') },
-  { id: 'gain', label: t('tab.gains') },
-  { id: 'watch', label: t('tab.watch') },
-  { id: 'agents', label: t('tab.background') },
+const TABS: { id: TabId; labelKey: Parameters<typeof t>[0] }[] = [
+  { id: 'session', labelKey: 'tab.session' },
+  { id: 'context', labelKey: 'tab.context' },
+  { id: 'eco', labelKey: 'tab.eco' },
+  { id: 'gain', labelKey: 'tab.gains' },
+  { id: 'watch', labelKey: 'tab.watch' },
+  { id: 'agents', labelKey: 'tab.background' },
 ]
 
 // The model buttons, cheapest first. The effort buttons offer EFFORTS until /config says otherwise.
 const MODELS = ['haiku', 'sonnet', 'opus', 'fable']
 const EFFORTS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
-const WINDOW_LABELS: Record<string, string> = {
-  five_hour: t('window.fiveHour'),
-  seven_day: t('window.sevenDay'),
-  spend_limit: t('window.spendLimit'),
+const WINDOW_LABELS: Record<string, Parameters<typeof t>[0]> = {
+  five_hour: 'window.fiveHour',
+  seven_day: 'window.sevenDay',
+  spend_limit: 'window.spendLimit',
 }
 
 function snapshot(u: SessionUsage, now: number): UsageSnapshot {
@@ -86,16 +86,79 @@ function snapshot(u: SessionUsage, now: number): UsageSnapshot {
   }
 }
 
+type EnvironmentName = 'HOME' | 'USERPROFILE' | 'HOMEDRIVE' | 'HOMEPATH' | 'APPDATA' | 'XDG_CONFIG_HOME' | 'OS' | 'OSTYPE' | 'ECOTOKENS_PANEL_LANG' | 'LC_ALL' | 'LC_MESSAGES' | 'LANG' | 'LANGUAGE'
+
+async function environmentValue($: EngineInterface, name: EnvironmentName) {
+  try {
+    switch (name) {
+      case 'HOME': return await $.env.get('HOME')
+      case 'USERPROFILE': return await $.env.get('USERPROFILE')
+      case 'HOMEDRIVE': return await $.env.get('HOMEDRIVE')
+      case 'HOMEPATH': return await $.env.get('HOMEPATH')
+      case 'APPDATA': return await $.env.get('APPDATA')
+      case 'XDG_CONFIG_HOME': return await $.env.get('XDG_CONFIG_HOME')
+      case 'OS': return await $.env.get('OS')
+      case 'OSTYPE': return await $.env.get('OSTYPE')
+      case 'ECOTOKENS_PANEL_LANG': return await $.env.get('ECOTOKENS_PANEL_LANG')
+      case 'LC_ALL': return await $.env.get('LC_ALL')
+      case 'LC_MESSAGES': return await $.env.get('LC_MESSAGES')
+      case 'LANG': return await $.env.get('LANG')
+      case 'LANGUAGE': return await $.env.get('LANGUAGE')
+    }
+  } catch {
+    return undefined
+  }
+
+  return undefined
+}
+
 async function homeDirectory($: EngineInterface) {
-  const home = await $.env.get('HOME')
-  const profile = await $.env.get('USERPROFILE')
+  const home = await environmentValue($, 'HOME')
+  const profile = await environmentValue($, 'USERPROFILE')
   if (profile && home && /^\/[a-z]\//i.test(home)) return profile
   if (home) return home
   if (profile) return profile
-  const drive = await $.env.get('HOMEDRIVE')
-  const homePath = await $.env.get('HOMEPATH')
+  const drive = await environmentValue($, 'HOMEDRIVE')
+  const homePath = await environmentValue($, 'HOMEPATH')
 
   return drive && homePath ? `${drive}${homePath}` : ''
+}
+
+async function ecotokensPathEnvironment($: EngineInterface): Promise<EcotokensPathEnvironment> {
+  const [appData, userProfile, xdgConfigHome, os, osType, home] = await Promise.all([
+    environmentValue($, 'APPDATA'),
+    environmentValue($, 'USERPROFILE'),
+    environmentValue($, 'XDG_CONFIG_HOME'),
+    environmentValue($, 'OS'),
+    environmentValue($, 'OSTYPE'),
+    environmentValue($, 'HOME'),
+  ])
+  const unixType = osType?.toLowerCase() ?? ''
+  const isGitBashHome = /^\/[a-z]\//i.test(home ?? '')
+  const isPosixHome = home?.startsWith('/') && !isGitBashHome
+  const platform = unixType.includes('linux') || (isPosixHome && !home?.startsWith('/Users/'))
+    ? 'linux'
+    : unixType.includes('darwin') || home?.startsWith('/Users/')
+      ? 'darwin'
+      : os === 'Windows_NT' || appData || userProfile
+        ? 'win32'
+        : 'linux'
+
+  return { platform, appData, userProfile, xdgConfigHome }
+}
+
+async function configurePanelLocale($: EngineInterface) {
+  const [explicit, lcAll, lcMessages, lang, language] = await Promise.all([
+    environmentValue($, 'ECOTOKENS_PANEL_LANG'),
+    environmentValue($, 'LC_ALL'),
+    environmentValue($, 'LC_MESSAGES'),
+    environmentValue($, 'LANG'),
+    environmentValue($, 'LANGUAGE'),
+  ])
+
+  if (explicit || lcAll || lcMessages || lang || language) {
+    configureLocale({ ECOTOKENS_PANEL_LANG: explicit, LC_ALL: lcAll, LC_MESSAGES: lcMessages, LANG: lang, LANGUAGE: language })
+  }
 }
 
 function detail(b: SessionContextBreakdown, now: number): ContextDetail {
@@ -223,19 +286,43 @@ function runQuery($: EngineInterface, q: EcoQuery) {
 
 async function refreshEco($: EngineInterface) {
   let log: EcoLog
+  let setup: EcoSetup | undefined
   try {
     const { startedAt } = await $.session.usage()
     const home = await homeDirectory($)
     if (!home) throw new Error(t('panel.homeUnavailable'))
-    const q = ecoQueries(home, startedAt, await $.session.cwd())
-    const [savings, totals, jev] = await Promise.all([
-      runQuery($, q.savings),
-      runQuery($, q.totals),
-      runQuery($, q.jev),
+    const paths = await ecotokensPathEnvironment($)
+    const databasePath = metricsDatabasePath(home, paths)
+    const configPath = ecotokensConfigPath(home, paths)
+    const routerPath = joinPath(ecotokensConfigDirectory(home, paths), 'router.db')
+    const [metricsAvailable, configAvailable, routerAvailable] = await Promise.all([
+      $.fs.exists(databasePath),
+      $.fs.exists(configPath),
+      $.fs.exists(routerPath),
     ])
-    log = ecoLog({ savings, totals, jev }, await $.clock.now())
+    let priceConfigured = false
+    if (configAvailable) {
+      try {
+        priceConfigured = parsePrice(await $.fs.read(configPath)) !== undefined
+      } catch {
+        // A missing or unreadable price should not hide metrics from the panel.
+      }
+    }
+    setup = { metricsPath: databasePath, metricsAvailable, configPath, configAvailable, priceConfigured }
+    const measuredAt = await $.clock.now()
+    if (!metricsAvailable) {
+      log = { savings: [], jev: [], totalSaved: 0, totalFiltered: 0, setup, measuredAt }
+    } else {
+      const q = ecoQueries(home, startedAt, await $.session.cwd(), paths)
+      const [savings, totals, jev] = await Promise.all([
+        runQuery($, q.savings),
+        runQuery($, q.totals),
+        routerAvailable ? runQuery($, q.jev) : Promise.resolve('[]'),
+      ])
+      log = { ...ecoLog({ savings, totals, jev }, measuredAt), setup }
+    }
   } catch (error) {
-    log = ecoError(error, await $.clock.now())
+    log = { ...ecoError(error, await $.clock.now()), setup }
   }
   await update($, eco, () => log)
 }
@@ -243,8 +330,9 @@ async function refreshEco($: EngineInterface) {
 // The databases the live lines read: without ecotokens there is nothing to draw, and nothing is run.
 async function ecoDir($: EngineInterface) {
   const home = await homeDirectory($)
+  const paths = await ecotokensPathEnvironment($)
 
-  return home && (await $.fs.exists(metricsDatabasePath(home))) ? home : undefined
+  return home && (await $.fs.exists(metricsDatabasePath(home, paths))) ? home : undefined
 }
 
 // A tool call that has finished waits for the row ecotokens wrote for it.
@@ -265,8 +353,9 @@ async function matchEco($: EngineInterface) {
     const waiting = (await read($, ecoTrack)).calls
     const home = waiting.length > 0 ? await ecoDir($) : undefined
     if (home === undefined) return
+    const paths = await ecotokensPathEnvironment($)
     const since = Math.min(...waiting.map(c => c.startedAt)) - MATCH_LEAD_MS
-    const rows = parseRows<MarkRow>(await runQuery($, ecoMarkQuery(home, since, await $.session.cwd())))
+    const rows = parseRows<MarkRow>(await runQuery($, ecoMarkQuery(home, since, await $.session.cwd(), paths)))
     const now = await $.clock.now()
     let found: ReturnType<typeof matchMarks>['marks'] = []
     // Matched on what the state holds now: a call tracked meanwhile is not lost, and no row is given twice.
@@ -288,7 +377,7 @@ async function ecoPrice($: EngineInterface) {
     const home = await homeDirectory($)
     if (!home) return undefined
 
-    return parsePrice(await $.fs.read(ecotokensConfigPath(home)))
+    return parsePrice(await $.fs.read(ecotokensConfigPath(home, await ecotokensPathEnvironment($))))
   } catch {
     return undefined
   }
@@ -304,9 +393,10 @@ async function logEcoTurn($: EngineInterface) {
     const since = Math.max(await read($, ecoSeen), startedAt)
     await update($, ecoSeen, () => now)
     const cwd = await $.session.cwd()
+    const paths = await ecotokensPathEnvironment($)
     const [turn, session] = await Promise.all([
-      runQuery($, ecoSavedQuery(home, since, cwd)),
-      runQuery($, ecoSavedQuery(home, startedAt, cwd)),
+      runQuery($, ecoSavedQuery(home, since, cwd, paths)),
+      runQuery($, ecoSavedQuery(home, startedAt, cwd, paths)),
     ])
     const line = turnLine(parseSaved(turn), parseSaved(session), await ecoPrice($))
     if (line) $.ui.log(line)
@@ -393,7 +483,14 @@ async function refreshWatch($: EngineInterface) {
     state = parseWatch(ran.stdout, ran.exitCode === 0, cwd, await $.clock.now())
     // Without its tail the log stays empty.
     const logFile = state.current?.logFile
-    const tail = logFile ? await readLogTail(logFile) : undefined
+    let tail: string | undefined
+    if (logFile) {
+      try {
+        tail = tailLogContents(await $.fs.read(logFile))
+      } catch {
+        // A missing or unreadable log does not make the watcher status unusable.
+      }
+    }
     if (tail !== undefined) state = { ...state, log: parseLogTail(tail) }
   } catch {
     // Left empty: the tab shows that the state could not be read.
@@ -492,7 +589,11 @@ async function refreshEcoIfShown($: EngineInterface) {
 }
 
 async function isPaneOpen($: EngineInterface) {
-  return (await $.ui.panes()).some(p => p.id === PANE)
+  try {
+    return (await $.ui.panes()).some(p => p.id === PANE)
+  } catch {
+    return false
+  }
 }
 
 async function toggle($: EngineInterface) {
@@ -573,6 +674,7 @@ export const register: Register = (on, options) => {
   const live = options.liveTranscript !== false
 
   on('session.start', async ($, e, next) => {
+    await configurePanelLocale($)
     await $.command.register({
       name: 'panel',
       description: t('command.panelDescription'),
@@ -742,18 +844,18 @@ export const register: Register = (on, options) => {
 
     const tabBar = (
       <Box flexDirection="row" flexWrap="wrap" gap={1}>
-        {TABS.map((t, i) => (
+        {TABS.map((tabItem, i) => (
           <Button
-            key={`tab-${t.id}`}
+            key={`tab-${tabItem.id}`}
             hotkey={String(i + 1)}
-            variant={t.id === current ? 'primary' : 'secondary'}
-            label={t.label}
+            variant={tabItem.id === current ? 'primary' : 'secondary'}
+            label={t(tabItem.labelKey)}
             onPress={async () => {
-              await update($, tab, () => t.id)
-              if (t.id === 'eco') await refreshEco($)
-              if (t.id === 'watch') await refreshWatch($)
-              if (t.id === 'gain') await refreshGain($)
-              if (t.id === 'agents') {
+              await update($, tab, () => tabItem.id)
+              if (tabItem.id === 'eco') await refreshEco($)
+              if (tabItem.id === 'watch') await refreshWatch($)
+              if (tabItem.id === 'gain') await refreshGain($)
+              if (tabItem.id === 'agents') {
                 await refreshAgents($)
                 watchAgents($)
               }
@@ -819,7 +921,7 @@ export const register: Register = (on, options) => {
             </Box>
           ) : (
             u.rateLimits.map(r =>
-              meter(WINDOW_LABELS[r.kind] ?? r.kind, r.percentUsed, untilReset(r.resetsAt, now)),
+              meter(WINDOW_LABELS[r.kind] ? t(WINDOW_LABELS[r.kind]!) : r.kind, r.percentUsed, untilReset(r.resetsAt, now)),
             )
           )}
         </Box>
@@ -1040,10 +1142,34 @@ export const register: Register = (on, options) => {
 
     const ecoTab = () => {
       if (!log) return <Text dimColor>{t('panel.ecoNoMeasurement')}</Text>
-      if (log.error) return <Text color="error">{t('panel.readFailed', { reason: log.error })}</Text>
+
+      const setup = log.setup
+      const setupDetails = setup && (
+        <Box flexDirection="column" marginBottom={1}>
+          {!setup.metricsAvailable && (
+            <Text color="yellow" wrap="truncate-end">{t('setup.metricsMissing', { path: setup.metricsPath })}</Text>
+          )}
+          {!setup.configAvailable && (
+            <Text dimColor wrap="truncate-end">{t('setup.configMissing', { path: setup.configPath })}</Text>
+          )}
+          {!setup.priceConfigured && (
+            <Text dimColor wrap="truncate-end">{t('setup.priceMissing')}</Text>
+          )}
+        </Box>
+      )
+      if (log.error) {
+        return (
+          <Box flexDirection="column">
+            {setupDetails}
+            <Text color="error">{t('panel.readFailed', { reason: log.error })}</Text>
+            <Text dimColor>{t('setup.readHelp')}</Text>
+          </Box>
+        )
+      }
 
       return (
         <Box flexDirection="column">
+          {setupDetails}
           <Box marginBottom={1}>
             <Text dimColor>
               {t('panel.ecoSessionSummary', { saved: kTokens(log.totalSaved), filtered: formatNumber(log.totalFiltered), unit: t('unit.tokens') })}
@@ -1094,7 +1220,7 @@ export const register: Register = (on, options) => {
             <Button
               key={`period-${p.id}`}
               variant={p.id === period ? 'primary' : 'secondary'}
-              label={p.label}
+              label={t(p.labelKey)}
               onPress={async () => {
                 await update($, gainPeriod, () => p.id)
                 await refreshGain($)
@@ -1151,7 +1277,7 @@ export const register: Register = (on, options) => {
                     <Text bold>{t('panel.byPurpose')}</Text>
                     {j.purposes.map(p =>
                       line(
-                        PURPOSE_LABELS[p.name] ?? p.name,
+                        purposeLabel(p.name),
                         `${formatNumber(p.calls)}× · ${formatNumber(p.avgLatencyMs)} ms`,
                         p.ok < p.calls ? 'warning' : undefined,
                       ),
@@ -1247,7 +1373,7 @@ export const register: Register = (on, options) => {
               {r.name ?? r.type}
             </Text>
             <Text color={s.color}>
-              {s.glyph} {s.label}
+              {s.glyph} {t(s.label)}
             </Text>
           </Box>
           <Text wrap="truncate-end">{r.description || '—'}</Text>
@@ -1276,7 +1402,7 @@ export const register: Register = (on, options) => {
               {taskKindLabel(task.kind)}
             </Text>
             <Text color={s.color}>
-              {s.glyph} {s.label}
+              {s.glyph} {t(s.label)}
             </Text>
           </Box>
           <Text wrap="truncate-end">{task.description || task.command || '—'}</Text>

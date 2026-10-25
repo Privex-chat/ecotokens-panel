@@ -3,11 +3,11 @@ import { t as tr } from './i18n'
 
 // `ecotokens gain` and `ecotokens jev` report over a period, held to one project with --project
 // (a directory inside it: ecotokens keys projects by git root).
-export const GAIN_PERIODS: { id: GainPeriod; label: string }[] = [
-  { id: 'today', label: tr('gain.period.today') },
-  { id: 'week', label: tr('gain.period.week') },
-  { id: 'month', label: tr('gain.period.month') },
-  { id: 'all', label: tr('gain.period.all') },
+export const GAIN_PERIODS: { id: GainPeriod; labelKey: Parameters<typeof tr>[0] }[] = [
+  { id: 'today', labelKey: 'gain.period.today' },
+  { id: 'week', labelKey: 'gain.period.week' },
+  { id: 'month', labelKey: 'gain.period.month' },
+  { id: 'all', labelKey: 'gain.period.all' },
 ]
 
 export function gainCommand(period: GainPeriod, project: string) {
@@ -98,11 +98,15 @@ export function sparkline(values: number[], width: number) {
 }
 
 // What Jev was asked to do, in the panel's words.
-export const PURPOSE_LABELS: Record<string, string> = {
-  router: tr('purpose.router'),
-  filter_lines: tr('purpose.filterLines'),
-  classify: tr('purpose.classify'),
-  code_gate: tr('purpose.codeGate'),
-  verify: tr('purpose.verify'),
-  other: tr('purpose.other'),
+const PURPOSE_KEYS: Record<string, Parameters<typeof tr>[0]> = {
+  router: 'purpose.router',
+  filter_lines: 'purpose.filterLines',
+  classify: 'purpose.classify',
+  code_gate: 'purpose.codeGate',
+  verify: 'purpose.verify',
+  other: 'purpose.other',
+}
+
+export function purposeLabel(purpose: string) {
+  return PURPOSE_KEYS[purpose] ? tr(PURPOSE_KEYS[purpose]) : purpose
 }

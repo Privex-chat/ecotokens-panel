@@ -1,4 +1,9 @@
 import { expect, test } from 'claude-code/testing'
+import { configureLocale } from '../hooks/i18n'
+import { formatUsd } from '../hooks/i18n'
+import { kTokens } from '../hooks/eco'
+
+configureLocale({ ECOTOKENS_PANEL_LANG: 'fr' })
 
 import {
   costLabel,
@@ -143,8 +148,8 @@ test('a run is priced per family, cache read and write apart, and an unknown mod
   expect(Math.round((runCost({ ...SONNET, model: 'claude-haiku-4-5-20251001' }))! * 1e6) / 1e6).toBe(0.0265)
   expect(runCost({ ...SONNET, model: 'gpt-x' })).toBeUndefined()
   expect(runCost({ ...SONNET, model: undefined })).toBeUndefined()
-  expect(costLabel(0.153)).toBe('≈ $0.15')
-  expect(costLabel(0.001)).toBe('< $0.01')
+  expect(costLabel(0.153)).toBe(`≈ ${formatUsd(0.153)}`)
+  expect(costLabel(0.001)).toBe(`< ${formatUsd(0.01)}`)
 })
 
 test('an agent row adds up its runs cost, and one unpriced run hides the total', () => {
@@ -159,8 +164,8 @@ test('an agent row adds up its runs cost, and one unpriced run hides the total',
 })
 
 test('only a router-* run writes a delegation line, with its cost when it can be priced', () => {
-  expect(delegationLine('router-everyday', SONNET)).toBe('délégation · router-everyday (sonnet-5-5) · 41.0k → 2.0k tokens · ≈ $0.05')
-  expect(delegationLine('router-tiny', { ...SONNET, model: 'mystery-1' })).toBe('délégation · router-tiny (mystery-1) · 41.0k → 2.0k tokens')
+  expect(delegationLine('router-everyday', SONNET)).toBe(`délégation · router-everyday (sonnet-5-5) · ${kTokens(41_000)} → ${kTokens(2_000)} tokens · ≈ ${formatUsd(0.053)}`)
+  expect(delegationLine('router-tiny', { ...SONNET, model: 'mystery-1' })).toBe(`délégation · router-tiny (mystery-1) · ${kTokens(41_000)} → ${kTokens(2_000)} tokens`)
   expect(delegationLine('Explore', SONNET)).toBeUndefined()
   expect(delegationLine('router-large', undefined)).toBeUndefined()
 })

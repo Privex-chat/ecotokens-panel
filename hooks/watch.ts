@@ -1,5 +1,3 @@
-import { open } from 'node:fs/promises'
-
 import type { WatchEntry, WatchState } from '../types'
 import { formatClock, t as tr } from './i18n'
 import { samePath } from './paths'
@@ -17,32 +15,16 @@ export function watchStop(path: string) {
   return ['ecotokens', 'watch', '--stop', '--path', path]
 }
 
-export function watchLogTail(logFile: string, lines = 8) {
-  return ['tail', '-n', String(lines), logFile]
-}
-
-// Read a bounded tail without relying on the Unix `tail` executable (which is absent on Windows).
-export async function readLogTail(logFile: string, lines = 8): Promise<string | undefined> {
-  let file: Awaited<ReturnType<typeof open>> | undefined
-  try {
-    file = await open(logFile, 'r')
-    const { size } = await file.stat()
-    if (size === 0) return ''
-    const offset = Math.max(0, size - 256 * 1024)
-    const buffer = new Uint8Array(size - offset)
-    const { bytesRead } = await file.read(buffer, 0, buffer.length, offset)
-    let text = new TextDecoder().decode(buffer.subarray(0, bytesRead))
-    if (offset > 0) {
-      const firstLineBreak = text.indexOf('\n')
-      if (firstLineBreak >= 0) text = text.slice(firstLineBreak + 1)
-    }
-
-    return text.split(/\r?\n/).filter(line => line.trim() !== '').slice(-Math.max(1, lines)).join('\n')
-  } catch {
-    return undefined
-  } finally {
-    await file?.close().catch(() => undefined)
+// The Claude plugin runtime exposes file reads through $.fs rather than Node built-ins.
+export function tailLogContents(contents: string, lines = 8) {
+  const offset = Math.max(0, contents.length - 256 * 1024)
+  let text = contents.slice(offset)
+  if (offset > 0) {
+    const firstLineBreak = text.indexOf('\n')
+    if (firstLineBreak >= 0) text = text.slice(firstLineBreak + 1)
   }
+
+  return text.split(/\r?\n/).filter(line => line.trim() !== '').slice(-Math.max(1, lines)).join('\n')
 }
 
 type StatusJson = { sessions?: unknown; watcher_pid?: unknown; log_file?: unknown; started_at?: unknown }

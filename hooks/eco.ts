@@ -1,6 +1,6 @@
 import type { EcoCall, EcoJevCall, EcoLog, EcoMark, EcoSaving, EcoTrack } from '../types'
 import { formatNumber, formatPercent, formatUsd, t as tr } from './i18n'
-import { joinPath, metricsDatabasePath } from './paths'
+import { ecotokensConfigDirectory, joinPath, metricsDatabasePath, type EcotokensPathEnvironment } from './paths'
 
 // ecotokens keeps no session id: "this session" is every row since it started.
 // Savings are also held to the session's project (their git_root); Jev calls carry none.
@@ -164,24 +164,25 @@ function savedSince(startedAt: number, sessionCwd: string) {
   return `timestamp >= ${since} AND tokens_after < tokens_before AND ${inProject}`
 }
 
-export function ecoQueries(home: string, startedAt: number, sessionCwd: string): EcoQueries {
-  const dir = joinPath(home, '.config', 'ecotokens')
+export function ecoQueries(home: string, startedAt: number, sessionCwd: string, environment?: EcotokensPathEnvironment): EcoQueries {
+  const dir = ecotokensConfigDirectory(home, environment)
+  const metricsDb = metricsDatabasePath(home, environment)
   const since = quote(new Date(startedAt).toISOString())
   const saved = savedSince(startedAt, sessionCwd)
 
   return {
     savings: sqlite(
-      `${dir}/metrics.db`,
+      metricsDb,
       `SELECT timestamp, substr(replace(replace(command, char(10), ' '), char(13), ' '), 1, 200) AS command,
                 command_family, tokens_before, tokens_after, savings_pct, mode
            FROM interceptions WHERE ${saved} ORDER BY timestamp DESC LIMIT 5`,
     ),
     totals: sqlite(
-      `${dir}/metrics.db`,
+      metricsDb,
       `SELECT sum(tokens_before - tokens_after) AS saved, count(*) AS filtered FROM interceptions WHERE ${saved}`,
     ),
     jev: sqlite(
-      `${dir}/router.db`,
+      joinPath(dir, 'router.db'),
       // The router writes its decision a few ms before the call it made: the latest one within 5 s.
       `SELECT j.timestamp, j.purpose, j.agent, j.ok, j.error_kind, j.http_status, j.latency_ms,
               j.input_tokens, j.output_tokens, d.size, d.confidence, d.followup_prob
@@ -252,7 +253,9 @@ export function ecoError(error: unknown, now: number): EcoLog {
 }
 
 export function kTokens(n: number) {
-  return n >= 1000 ? `${formatNumber(n / 1000, n >= 100_000 ? 0 : 1)}k` : formatNumber(n)
+  const digits = n >= 100_000 ? 0 : 1
+
+  return n >= 1000 ? `${formatNumber(n / 1000, digits, digits)}k` : formatNumber(n)
 }
 
 // ecotokens stamps nanoseconds; Date reads milliseconds.
@@ -287,9 +290,9 @@ export type MarkRow = {
 }
 
 // The rows that saved something since `since`, oldest first.
-export function ecoMarkQuery(home: string, since: number, sessionCwd: string): EcoQuery {
+export function ecoMarkQuery(home: string, since: number, sessionCwd: string, environment?: EcotokensPathEnvironment): EcoQuery {
   return sqlite(
-    metricsDatabasePath(home),
+    metricsDatabasePath(home, environment),
     `SELECT id, timestamp, substr(replace(replace(command, char(10), ' '), char(13), ' '), 1, 200) AS command,
             length(command) > 200 AS cut, tokens_before, tokens_after, mode
        FROM interceptions WHERE ${savedSince(since, sessionCwd)} AND mode != 'rewritten' ORDER BY timestamp LIMIT 300`,
@@ -346,7 +349,7 @@ export function parsePrice(text: string): number | undefined {
   try {
     const price = (JSON.parse(text) as { price_input_usd_per_mtok?: unknown }).price_input_usd_per_mtok
 
-    return typeof price === 'number' && Number.isFinite(price) && price > 0 ? price : undefined
+    return typeof price === 'number' && Number.isFinite(price) && price >= 0 ? price : undefined
   } catch {
     return undefined
   }
@@ -356,6 +359,8 @@ export function parsePrice(text: string): number | undefined {
 function costPart(saved: number, price: number | undefined) {
   if (price === undefined || saved <= 0) return undefined
   const usd = (saved / 1_000_000) * price
+
+  if (usd === 0) return `≈ ${formatUsd(0)}`
 
   return usd < 0.01 ? `< ${formatUsd(0.01)}` : `≈ ${formatUsd(usd)}`
 }
@@ -381,9 +386,9 @@ export function groupLine(marks: EcoMark[], price?: number) {
 }
 
 // The rows that saved something since `since` (Rewritten rows excluded, as `ecotokens gain` does), summed.
-export function ecoSavedQuery(home: string, since: number, sessionCwd: string): EcoQuery {
+export function ecoSavedQuery(home: string, since: number, sessionCwd: string, environment?: EcotokensPathEnvironment): EcoQuery {
   return sqlite(
-    metricsDatabasePath(home),
+    metricsDatabasePath(home, environment),
     `SELECT sum(tokens_before) AS before, sum(tokens_after) AS after
        FROM interceptions WHERE ${savedSince(since, sessionCwd)} AND mode != 'rewritten'`,
   )

@@ -18,7 +18,9 @@ Répondez `y` pour ajouter le marketplace, puis choisissez la portée (`user` pa
 
 - **Claude Code** (terminal, ou onglet Code de l'application desktop), avec la prise en charge des plugins à hooks (`/plugin`).
 - **ecotokens 0.30.0 ou plus récent** dans le `PATH`, avec ses hooks installés (`ecotokens install`). L'onglet Gains utilise l'option `--project` de `ecotokens gain` et `ecotokens jev`, apparue dans cette version. Vérifiez avec `ecotokens --version`.
-- **sqlite3** dans le `PATH`, pour l'onglet Ecotokens et les lignes de la conversation, qui lisent les bases d'ecotokens en lecture seule.
+- **sqlite3** dans le `PATH`, pour lire la base de mesures en lecture seule. Sous Windows, vérifiez que `sqlite3.exe` est également accessible depuis l’environnement qui lance Claude Code.
+
+Le panneau suit les chemins de données natifs d'ecotokens : `%APPDATA%\ecotokens` sous Windows, `~/Library/Application Support/ecotokens` sous macOS et `$XDG_CONFIG_HOME/ecotokens` (ou `~/.config/ecotokens`) sous Linux. Il affiche l’emplacement attendu et les étapes de diagnostic si la base de mesures ou la configuration manque. Une configuration absente laisse ecotokens utiliser ses valeurs par défaut ; les estimations de coût restent indisponibles tant qu’un tarif n’est pas défini avec `ecotokens gain price --input <USD par million> --output <USD par million>`. `ecotokens doctor` vérifie l’installation.
 
 Sans ecotokens, les onglets Session, Contexte et Background fonctionnent toujours ; les autres indiquent qu'ils ne peuvent pas lire l'état.
 
@@ -40,6 +42,8 @@ claude
 ```
 
 Les valeurs prises en charge sont `en`, `fr` et `hi`. Sans remplacement explicite, le panneau suit la langue du système lorsqu’elle est prise en charge, puis revient à l’anglais. Les catalogues se trouvent dans `locales/`.
+
+`locales/en.ts` est le catalogue canonique. Pour ajouter un texte, ajoutez une clé sémantique avec les mêmes placeholders dans les catalogues anglais, français et hindi. Le typage et le test de complétude (`claude plugin test .`) signalent les catalogues incomplets. Pour ajouter une langue, créez son catalogue puis ajoutez son code à `hooks/i18n.ts` et aux tests.
 
 Ouvrez ou fermez le panneau avec le bouton du pied de page ou la commande `/panel`. Les touches `1` à `6` changent d'onglet (la barre d'onglets passe à la ligne quand le panneau est étroit), `↻` relit tout, `✕` ferme.
 
@@ -64,11 +68,11 @@ Sans ouvrir le panneau, le plugin écrit aussi dans la conversation, en gris :
 - à la fin de chaque tour de la conversation principale, l'économie depuis le tour précédent, puis le cumul de la session (ces lignes ne sont que de l'affichage : elles ne sont pas envoyées au modèle) : `ecotokens · −24.1k tokens (−87 %) · ≈ $0.05 · session −312k · ≈ $0.62`. Rien n'est écrit quand ecotokens n'a rien économisé pendant le tour.
 - quand un sous-agent délégué par le routeur ecotokens (`router-tiny`, `router-everyday`, `router-large`, `router-hardest`) termine, ses tokens et son coût : `délégation · router-everyday (sonnet-5-5) · 41.0k → 2.0k tokens · ≈ $0.15`. Une ligne par exécution terminée.
 
-Les lignes `ecotokens` ne montrent que l'économie. Le coût évité est calculé comme `ecotokens gain` : tokens économisés ÷ 1 000 000 × `price_input_usd_per_mtok` de `~/.config/ecotokens/config.json` ; sans ce prix, la partie `≈ $` est omise, et sous un centime elle affiche `< $0.01`.
+Les lignes `ecotokens` ne montrent que l'économie. Le coût évité est calculé comme `ecotokens gain` : tokens économisés ÷ 1 000 000 × `price_input_usd_per_mtok` de la configuration ecotokens située dans le dossier de données natif du système ; sans ce prix, la partie `≈ $` est omise, et sous un centime elle affiche `< $0.01` (un tarif nul affiche `≈ $0.00`).
 
 Le coût d'une délégation et celui d'un agent du Background sont des **estimations** : Claude Code ne donne ni coût par exécution ni grille de prix aux plugins, donc `hooks/agents.ts` porte une petite table de prix publics (USD par million de tokens : entrée, sortie, lecture et écriture du cache) pour les familles haiku, sonnet, opus et fable ; elle est approximative et à tenir à jour à la main. Les tokens de cache sont comptés à leur propre tarif. Pour un modèle hors de ces familles, la partie `≈ $` est omise. Comme `ecotokens gain`, les lignes en mode « réécrit » ne sont pas comptées.
 
-ecotokens ne note pas l'identifiant de l'appel d'outil : le plugin rapproche un appel (Bash ou Read) de sa ligne dans `metrics.db` par le texte de la commande (ou `Read <fichier>`) et par l'heure. Deux commandes identiques lancées presque ensemble peuvent donc échanger leur ligne. Les sorties des autres outils ne sont pas rapprochées, et un appel d'une série dépliée n'a pas de ligne. Ces lignes sont relues à la fin de chaque appel d'outil (et 4 s plus tard, pour les lectures que résume ecotokens après coup), puis à la fin de chaque tour : pas de minuteur qui tourne en continu. Sans ecotokens (pas de `~/.config/ecotokens/metrics.db`), rien n'est lancé ni affiché.
+ecotokens ne note pas l'identifiant de l'appel d'outil : le plugin rapproche un appel (Bash ou Read) de sa ligne dans `metrics.db` par le texte de la commande (ou `Read <fichier>`) et par l'heure. Deux commandes identiques lancées presque ensemble peuvent donc échanger leur ligne. Les sorties des autres outils ne sont pas rapprochées, et un appel d'une série dépliée n'a pas de ligne. Ces lignes sont relues à la fin de chaque appel d'outil (et 4 s plus tard, pour les lectures que résume ecotokens après coup), puis à la fin de chaque tour : pas de minuteur qui tourne en continu. Sans base de mesures ecotokens dans son dossier de données natif, rien n'est lancé ni affiché.
 
 Pour les désactiver : `/config`, ligne **Lignes ecotokens dans la conversation** du plugin (option `liveTranscript`, activée par défaut). Le panneau n'est pas touché.
 

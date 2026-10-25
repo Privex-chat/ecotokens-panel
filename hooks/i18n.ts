@@ -41,12 +41,14 @@ type RuntimeWithEnv = typeof globalThis & {
   process?: { env?: Record<string, string | undefined> }
 }
 
-function currentLocale() {
-  const env = (globalThis as RuntimeWithEnv).process?.env ?? {}
-  const detected = [env.LC_ALL, env.LC_MESSAGES, env.LANG, env.LANGUAGE]
+function environmentLocale(env: Record<string, string | undefined>) {
+  return [env.LC_ALL, env.LC_MESSAGES, env.LANG, env.LANGUAGE]
     .map(supportedLanguage)
     .find((value): value is Locale => value !== undefined)
+}
 
+function systemLocale(env: Record<string, string | undefined>) {
+  const detected = environmentLocale(env)
   let intlLocale: string | undefined
   try {
     intlLocale = Intl.DateTimeFormat().resolvedOptions().locale
@@ -54,12 +56,19 @@ function currentLocale() {
     // The English fallback still works in runtimes without locale data.
   }
 
-  const locale = supportedLanguage(env.ECOTOKENS_PANEL_LANG) ?? detected ?? supportedLanguage(intlLocale) ?? 'en'
+  return detected ?? supportedLanguage(intlLocale) ?? 'en'
+}
+
+export let locale: Locale = 'en'
+
+export function configureLocale(env: Record<string, string | undefined>) {
+  const detected = supportedLanguage(env.ECOTOKENS_PANEL_LANG) ?? environmentLocale(env)
+  locale = detected ?? systemLocale(env)
 
   return locale
 }
 
-export const locale: Locale = currentLocale()
+configureLocale((globalThis as RuntimeWithEnv).process?.env ?? {})
 
 function interpolate(template: string, values: Values = {}) {
   return template.replace(/\{([\w.]+)\}/g, (placeholder, name: string) => {
@@ -87,10 +96,16 @@ export function tp(key: PluralKey, count: number, values: Values = {}): string {
   return interpolate(template ?? fallbackTemplate ?? String(key), { ...values, count: formatNumber(count) })
 }
 
-export function formatNumber(value: number, maximumFractionDigits = 0) {
+export function formatNumber(value: number, maximumFractionDigits = 0, minimumFractionDigits = 0) {
   if (!Number.isFinite(value)) return String(value)
 
-  return new Intl.NumberFormat(locale, { maximumFractionDigits }).format(value)
+  return new Intl.NumberFormat(locale, { minimumFractionDigits, maximumFractionDigits }).format(value)
+}
+
+export function formatInteger(value: number, minimumIntegerDigits = 1) {
+  if (!Number.isFinite(value)) return String(value)
+
+  return new Intl.NumberFormat(locale, { useGrouping: false, minimumIntegerDigits, maximumFractionDigits: 0 }).format(value)
 }
 
 export function formatPercent(part: number, whole: number, maximumFractionDigits = 1) {

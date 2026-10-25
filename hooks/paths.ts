@@ -1,3 +1,10 @@
+export type EcotokensPathEnvironment = {
+  platform?: string
+  appData?: string
+  userProfile?: string
+  xdgConfigHome?: string
+}
+
 export function joinPath(base: string, ...parts: string[]) {
   const separator = base.includes('\\') && base.lastIndexOf('\\') > base.lastIndexOf('/') ? '\\' : '/'
   const trimmedBase = base.replace(/[\\/]+$/, '')
@@ -21,13 +28,13 @@ export function samePath(left: string, right: string) {
 }
 
 export function pathBelow(path: string, parent: string) {
-  const child = normalizedPath(path)
-  const root = normalizedPath(parent)
-  const windowsPath = /^[a-z]:\//i.test(child) || /^[a-z]:\//i.test(root) || path.includes('\\') || parent.includes('\\')
-  const normalizedChild = windowsPath ? child.toLowerCase() : child
-  const normalizedRoot = windowsPath ? root.toLowerCase() : root
+  const normalizedChild = normalizedPath(path)
+  const normalizedRoot = normalizedPath(parent)
+  const windowsPath = /^[a-z]:\//i.test(normalizedChild) || /^[a-z]:\//i.test(normalizedRoot) || path.includes('\\') || parent.includes('\\')
+  const child = windowsPath ? normalizedChild.toLowerCase() : normalizedChild
+  const root = windowsPath ? normalizedRoot.toLowerCase() : normalizedRoot
 
-  return normalizedChild.startsWith(`${normalizedRoot}/`)
+  return child.startsWith(`${root}/`)
 }
 
 export function relativePath(path: string, parent: string) {
@@ -37,10 +44,33 @@ export function relativePath(path: string, parent: string) {
   return normalizedPath(path).slice(normalizedPath(parent).length + 1)
 }
 
-export function metricsDatabasePath(home: string) {
-  return joinPath(home, '.config', 'ecotokens', 'metrics.db')
+export function ecotokensConfigDirectory(home: string, environment: EcotokensPathEnvironment = {}) {
+  const normalizedHome = home.replaceAll('\\', '/')
+  const platform = environment.platform ?? (
+    environment.appData || environment.userProfile || /^[a-z]:\//i.test(normalizedHome)
+      ? 'win32'
+      : normalizedHome.startsWith('/Users/')
+        ? 'darwin'
+        : 'linux'
+  )
+  if (platform === 'win32') {
+    const roaming = environment.appData
+    const profile = environment.userProfile ?? home
+
+    return joinPath(roaming || joinPath(profile, 'AppData', 'Roaming'), 'ecotokens')
+  }
+
+  if (platform === 'darwin') return joinPath(home, 'Library', 'Application Support', 'ecotokens')
+
+  const configHome = environment.xdgConfigHome?.startsWith('/') ? environment.xdgConfigHome : joinPath(home, '.config')
+
+  return joinPath(configHome, 'ecotokens')
 }
 
-export function ecotokensConfigPath(home: string) {
-  return joinPath(home, '.config', 'ecotokens', 'config.json')
+export function metricsDatabasePath(home: string, environment?: EcotokensPathEnvironment) {
+  return joinPath(ecotokensConfigDirectory(home, environment), 'metrics.db')
+}
+
+export function ecotokensConfigPath(home: string, environment?: EcotokensPathEnvironment) {
+  return joinPath(ecotokensConfigDirectory(home, environment), 'config.json')
 }
