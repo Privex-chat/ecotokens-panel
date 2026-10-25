@@ -247,6 +247,18 @@ async function runSetting($: EngineInterface, command: 'model' | 'effort', value
   }
 }
 
+// Ultracode is a session mode, not an effort level. Keep its controls separate
+// and explicit because Claude Code does not expose its live state to plugins.
+async function runUltracode($: EngineInterface, enabled: boolean) {
+  const args = enabled ? 'ultracode on' : 'ultracode off'
+  try {
+    await $.command.run({ command: 'effort', args })
+    $.ui.toast(t(enabled ? 'toast.ultracodeEnabled' : 'toast.ultracodeDisabled'))
+  } catch (error) {
+    $.ui.toast(t('toast.settingFailed', { command: `/effort ${args}`, reason: message(error) }))
+  }
+}
+
 // A command's output; a non-zero exit is an error carrying its stderr.
 async function output($: EngineInterface, argv: string[], timeoutMs: number, what = argv.slice(0, 2).join(' ')) {
   const ran = await $.process.run(argv, { timeoutMs })
@@ -1073,6 +1085,24 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" gap={1}>
           {choice(t('panel.model'), MODELS, alias, 'model')}
           {choice(t('panel.effort'), efforts, currentEffort, 'effort')}
+          <Box flexDirection="column" gap={1}>
+            <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap={1}>
+              {section(t('panel.ultracode'))}
+              <Button
+                key="ultracode-enable"
+                variant="secondary"
+                label={t('panel.enable')}
+                onPress={() => void runUltracode($, true)}
+              />
+              <Button
+                key="ultracode-disable"
+                variant="secondary"
+                label={t('panel.disable')}
+                onPress={() => void runUltracode($, false)}
+              />
+            </Box>
+            <Text dimColor>{t('panel.ultracodeHint')}</Text>
+          </Box>
           {currentModel && <Text dimColor wrap="truncate-end">{currentModel}</Text>}
         </Box>
       )

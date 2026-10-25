@@ -83,6 +83,31 @@ test('the effort buttons fall back to the built-in list when /config gives none'
   await ui.unmount()
 })
 
+test('the session exposes Ultracode as separate, explicit session controls', async ($, on) => {
+  mock.env(on, { ECOTOKENS_PANEL_LANG: 'en' })
+  mock.clock(on)
+  on('session.id', async () => ({ value: 'sess-1' }))
+  on('session.usage', async () => ({ value: { startedAt: 0, context: { window: 200_000 }, rateLimits: [] } }))
+  on('config.list', async () => ({ value: [] }))
+  const commands: string[] = []
+  on('command.run', async (_$, e) => {
+    commands.push(`${e.command} ${e.args}`)
+    return { value: { text: '' } }
+  })
+
+  const ui = await $.ui.mount({ plugin: 'ecotokens-panel', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ key: 'ultracode-enable' })).toBeDefined()
+  expect(await ui.find({ key: 'ultracode-disable' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Automatically plans workflows/ })).toBeDefined()
+  expect(await ui.find({ key: 'effort-ultracode' })).toBeUndefined()
+
+  await ui.press({ key: 'ultracode-enable' })
+  await ui.press({ key: 'ultracode-disable' })
+  expect(commands).toEqual(['effort ultracode on', 'effort ultracode off'])
+  await ui.unmount()
+})
+
 test('the footer keeps the engine modes and adds the toggle button', async $ => {
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({
