@@ -1,6 +1,7 @@
 import type { EcoCall, EcoJevCall, EcoLog, EcoMark, EcoSaving, EcoTrack } from '../types'
 import { formatNumber, formatPercent, formatUsd, t as tr } from './i18n'
 import { ecotokensConfigDirectory, joinPath, metricsDatabasePath, type EcotokensPathEnvironment } from './paths'
+import { inputPriceForModel, priceModelLabel } from './pricing'
 
 // ecotokens keeps no session id: "this session" is every row since it started.
 // Savings are also held to the session's project (their git_root); Jev calls carry none.
@@ -355,20 +356,32 @@ export function parsePrice(text: string): number | undefined {
   }
 }
 
-// Same as `ecotokens gain`: tokens saved / 1e6 x the input price.
-function costPart(saved: number, price: number | undefined) {
-  if (price === undefined || saved <= 0) return undefined
-  const usd = (saved / 1_000_000) * price
+export type EcoRate = { price: number; model?: string; configured: boolean }
 
-  if (usd === 0) return `≈ ${formatUsd(0)}`
+// An explicit EcoTokens price is a global override. With no override, use the
+// active Claude model's first-party API input rate for this turn.
+export function resolveEcoRate(configText: string | undefined, model: string | undefined, inputTokens?: number): EcoRate | undefined {
+  const configured = configText === undefined ? undefined : parsePrice(configText)
+  if (configured !== undefined) return { price: configured, configured: true }
 
-  return usd < 0.01 ? `< ${formatUsd(0.01)}` : `≈ ${formatUsd(usd)}`
+  const price = inputPriceForModel(model, inputTokens)
+
+  return price === undefined ? undefined : { price, model: priceModelLabel(model), configured: false }
 }
 
-function savingParts(t: EcoTotals, price: number | undefined) {
+// Same as `ecotokens gain`: tokens saved / 1e6 x the input price.
+function costPart(saved: number, price: number | undefined, model?: string) {
+  if (price === undefined || saved <= 0) return undefined
+  const usd = (saved / 1_000_000) * price
+  const amount = usd === 0 ? `≈ ${formatUsd(0)}` : usd < 0.01 ? `< ${formatUsd(0.01)}` : `≈ ${formatUsd(usd)}`
+
+  return model ? `${amount} ${tr('transcript.apiRate', { model })}` : amount
+}
+
+function savingParts(t: EcoTotals, price: number | undefined, model?: string) {
   const saved = t.before - t.after
 
-  return [tr('transcript.saving', { tokens: kTokens(saved), percent: formatPercent(saved, t.before, 0), unit: tr('unit.tokens') }), costPart(saved, price)].filter(Boolean) as string[]
+  return [tr('transcript.saving', { tokens: kTokens(saved), percent: formatPercent(saved, t.before, 0), unit: tr('unit.tokens') }), costPart(saved, price, model)].filter(Boolean) as string[]
 }
 
 function sum(marks: EcoMark[]): EcoTotals {
@@ -376,13 +389,13 @@ function sum(marks: EcoMark[]): EcoTotals {
 }
 
 // `ecotokens · −11.3k tokens (−91 %) · ≈ $0.02`
-export function markLine(mark: EcoMark, price?: number) {
-  return ['ecotokens', ...savingParts(mark, price)].join(' · ')
+export function markLine(mark: EcoMark, price?: number, model?: string) {
+  return ['ecotokens', ...savingParts(mark, price, model)].join(' · ')
 }
 
 // One line under a folded group of tool calls: what ecotokens saved on the ones it touched.
-export function groupLine(marks: EcoMark[], price?: number) {
-  return ['ecotokens', ...savingParts(sum(marks), price)].join(' · ')
+export function groupLine(marks: EcoMark[], price?: number, model?: string) {
+  return ['ecotokens', ...savingParts(sum(marks), price, model)].join(' · ')
 }
 
 // The rows that saved something since `since` (Rewritten rows excluded, as `ecotokens gain` does), summed.
@@ -401,10 +414,12 @@ export function parseSaved(stdout: string): EcoTotals {
 }
 
 // The line that closes a turn: savings since the last one, and since the session began.
-export function turnLine(turn: EcoTotals, session: EcoTotals, price?: number) {
+export function turnLine(turn: EcoTotals, session: EcoTotals, price?: number, model?: string, includeSessionCost = true) {
   if (turn.before - turn.after <= 0) return undefined
   const sessionSaved = session.before - session.after
-  const sessionPart = sessionSaved > 0 ? [tr('transcript.sessionSaved', { tokens: kTokens(sessionSaved), unit: tr('unit.tokens') }), costPart(sessionSaved, price)] : []
+  const sessionPart = sessionSaved > 0
+    ? [tr('transcript.sessionSaved', { tokens: kTokens(sessionSaved), unit: tr('unit.tokens') }), includeSessionCost ? costPart(sessionSaved, price) : undefined]
+    : []
 
-  return ['ecotokens', ...savingParts(turn, price), ...sessionPart].filter(Boolean).join(' · ')
+  return ['ecotokens', ...savingParts(turn, price, model), ...sessionPart].filter(Boolean).join(' · ')
 }

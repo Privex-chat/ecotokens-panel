@@ -4,7 +4,7 @@ import { kTokens } from '../hooks/eco'
 
 configureLocale({ ECOTOKENS_PANEL_LANG: 'fr' })
 
-import { callKey, describeJev, describeSaving, ecoLog, ecoQueries, ecoSavedQuery, groupLine, markLine, matchMarks, parsePrice, parseSaved, turnLine } from '../hooks/eco'
+import { callKey, describeJev, describeSaving, ecoLog, ecoQueries, ecoSavedQuery, groupLine, markLine, matchMarks, parsePrice, parseSaved, resolveEcoRate, turnLine } from '../hooks/eco'
 import type { MarkRow } from '../hooks/eco'
 
 test('a saving names its object and its means', () => {
@@ -111,10 +111,16 @@ test('the lines say only what was saved: tokens, share and avoided cost', () => 
   expect(groupLine([{ before: 5000, after: 500, mode: 'filtered' }, { before: 2000, after: 200, mode: 'filtered' }], 2)).toBe(
     `ecotokens · −${kTokens(6_300)} tokens (−${formatPercent(6_300, 7_000, 0)}) · ≈ ${formatUsd(0.0126)}`,
   )
+  expect(markLine({ before: 12_400, after: 1_100, mode: 'summarized' }, 2, 'Claude Opus 5.5')).toContain(
+    `≈ ${formatUsd(0.0226)} estimation API (Claude Opus 5.5)`,
+  )
 
   const turn = { before: 27_700, after: 3_600 }
   const session = { before: 330_000, after: 18_000 }
   expect(turnLine(turn, session, 2)).toBe(`ecotokens · −${kTokens(24_100)} tokens (−${formatPercent(24_100, 27_700, 0)}) · ≈ ${formatUsd(0.0482)} · session −${kTokens(312_000)} tokens · ≈ ${formatUsd(0.624)}`)
+  expect(turnLine(turn, session, 2, 'Claude Sonnet 5.5', false)).toBe(
+    `ecotokens · −${kTokens(24_100)} tokens (−${formatPercent(24_100, 27_700, 0)}) · ≈ ${formatUsd(0.0482)} estimation API (Claude Sonnet 5.5) · session −${kTokens(312_000)} tokens`,
+  )
   expect(turnLine(turn, session)).toBe(`ecotokens · −${kTokens(24_100)} tokens (−${formatPercent(24_100, 27_700, 0)}) · session −${kTokens(312_000)} tokens`)
   // A turn in which ecotokens saved nothing draws nothing.
   expect(turnLine({ before: 0, after: 0 }, session, 2)).toBeUndefined()
@@ -126,6 +132,16 @@ test('the price comes from the ecotokens config, and is absent when unset or unr
   expect(parsePrice('{"other": 1}')).toBeUndefined()
   expect(parsePrice('{"price_input_usd_per_mtok": null}')).toBeUndefined()
   expect(parsePrice('not json')).toBeUndefined()
+})
+
+test('an explicit global price wins; otherwise estimate by active model and prompt size', () => {
+  expect(resolveEcoRate(undefined, 'claude-opus-5-5')).toEqual({ price: 4, model: 'Claude Opus 5.5', configured: false })
+  expect(resolveEcoRate(undefined, 'claude-haiku-5-5')).toBeUndefined()
+  expect(resolveEcoRate(undefined, 'claude-haiku-5-5', 100_000)).toEqual({ price: 0.1, model: 'Claude Haiku 5.5', configured: false })
+  expect(resolveEcoRate(undefined, 'claude-haiku-5-5', 100_001)).toEqual({ price: 0.5, model: 'Claude Haiku 5.5', configured: false })
+  expect(resolveEcoRate(undefined, 'unknown-model')).toBeUndefined()
+  expect(resolveEcoRate('{"price_input_usd_per_mtok": 7}', 'claude-opus-5-5')).toEqual({ price: 7, configured: true })
+  expect(resolveEcoRate('{"price_input_usd_per_mtok": 0}', 'claude-opus-5-5')).toEqual({ price: 0, configured: true })
 })
 
 test('zero input price is a configured price and reports zero avoided cost', () => {

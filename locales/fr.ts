@@ -167,6 +167,7 @@ export const fr = {
   'saving.tokens': '{mode} · {before} → {after} {unit}',
   'transcript.saving': '−{tokens} {unit} (−{percent})',
   'transcript.sessionSaved': 'session −{tokens} {unit}',
+  'transcript.apiRate': 'estimation API ({model})',
   'jev.filterTitle': 'Filtrage IA d’une sortie trop longue',
   'jev.filterSuccess': 'Jev a choisi les lignes utiles à garder',
   'jev.filterFailure': 'Échec : la sortie a été filtrée sans Jev',

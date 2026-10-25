@@ -535,11 +535,33 @@ test('a tool result carries what ecotokens saved on that call, a folded group th
   await group.unmount()
 })
 
-test('without a price in the config the lines show tokens only', async ($, on) => {
+test('without a global price, the turn estimate follows the model used by that prompt', async ($, on) => {
   mock.clock(on, { now: Date.parse('2026-10-06T09:00:00Z') })
   const { logged } = ecotokensRows(on, [], true, null)
 
-  await $.turn.complete({ answer: 'Done.', durationMs: 5_000, isAborted: false, turnId: 'turn-1', reason: 'answer' })
+  await $.turn.complete({
+    answer: 'Done.',
+    durationMs: 5_000,
+    isAborted: false,
+    turnId: 'turn-1',
+    reason: 'answer',
+    usage: { input_tokens: 50_000, output_tokens: 800, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-opus-5-5' },
+  })
+  expect(logged).toEqual(['ecotokens · −24.1k tokens (−87%) · ≈ $0.10 API estimate (Claude Opus 5.5) · session −312k tokens'])
+})
+
+test('without a global price, an unsupported prompt model remains unpriced', async ($, on) => {
+  mock.clock(on, { now: Date.parse('2026-10-06T09:00:00Z') })
+  const { logged } = ecotokensRows(on, [], true, null)
+
+  await $.turn.complete({
+    answer: 'Done.',
+    durationMs: 5_000,
+    isAborted: false,
+    turnId: 'turn-1',
+    reason: 'answer',
+    usage: { input_tokens: 50_000, output_tokens: 800, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'unknown-model' },
+  })
   expect(logged).toEqual(['ecotokens · −24.1k tokens (−87%) · session −312k tokens'])
 })
 

@@ -1,6 +1,7 @@
 import type { AgentInfo, AgentSpawnInput, TurnCompleteInput } from 'claude-code'
 
 import { kTokens } from './eco'
+import { runCost } from './pricing'
 import type { AgentRow, AgentRunStatus, TaskRow, TaskRunStatus } from '../types'
 import { formatInteger, formatNumber, formatUsd, t as tr, tp } from './i18n'
 
@@ -93,16 +94,6 @@ export function recordToolUse(rows: AgentRow[], agentId: string, tool: string): 
   return rows.map(r => (r.id === agentId ? { ...r, toolUses: r.toolUses + 1, lastTool: tool } : r))
 }
 
-// USD per million tokens by model family: input, output, cache read, cache write (5-minute). The engine
-// gives no cost per run and no price list, so these are the list prices of the current models as the
-// Claude API reference gives them (2026-09): approximate, to be kept up to date by hand.
-const PRICES: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  haiku: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
-  sonnet: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
-  opus: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
-  fable: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
-}
-
 type RunUsage = {
   input_tokens: number
   output_tokens: number
@@ -111,20 +102,8 @@ type RunUsage = {
   model?: string
 }
 
-// What one run cost, in USD; undefined for a model of a family the table does not know.
-export function runCost(usage: RunUsage | undefined): number | undefined {
-  const family = Object.keys(PRICES).find(f => usage?.model?.includes(f))
-  const price = family ? PRICES[family] : undefined
-  if (!usage || !price) return undefined
-
-  return (
-    (usage.input_tokens * price.input +
-      usage.output_tokens * price.output +
-      usage.cache_read_input_tokens * price.cacheRead +
-      usage.cache_creation_input_tokens * price.cacheWrite) /
-    1_000_000
-  )
-}
+// What one run cost, in USD; unknown or unsupported models remain unpriced.
+export { runCost }
 
 export function costLabel(usd: number) {
   return usd < 0.005 ? `< ${formatUsd(0.01)}` : `≈ ${formatUsd(usd)}`

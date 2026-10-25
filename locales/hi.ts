@@ -167,6 +167,7 @@ export const hi = {
   'saving.tokens': '{mode} · {before} → {after} {unit}',
   'transcript.saving': '−{tokens} {unit} (−{percent})',
   'transcript.sessionSaved': 'सेशन में −{tokens} {unit}',
+  'transcript.apiRate': 'API अनुमान ({model})',
   'jev.filterTitle': 'लंबे आउटपुट की AI फ़िल्टरिंग',
   'jev.filterSuccess': 'Jev ने रखने के लिए उपयोगी पंक्तियाँ चुनीं',
   'jev.filterFailure': 'विफल: Jev के बिना आउटपुट फ़िल्टर किया गया',

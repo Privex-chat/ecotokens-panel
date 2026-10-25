@@ -142,9 +142,9 @@ test('an ended agent or task leaves five minutes after it ended, a running or li
 
 const SONNET = { input_tokens: 1_000, output_tokens: 2_000, cache_read_input_tokens: 30_000, cache_creation_input_tokens: 10_000, model: 'claude-sonnet-5-5' }
 
-test('a run is priced per family, cache read and write apart, and an unknown model has no price', () => {
-  // 1k x 2 + 2k x 10 + 30k x 0.2 + 10k x 2.5 = 2000 + 20000 + 6000 + 25000 per million
-  expect(Math.round((runCost(SONNET))! * 1e6) / 1e6).toBe(0.053)
+test('a run uses its model ID and separate cache rates; an unknown model has no price', () => {
+  // Sonnet 5.5 cache reads are now priced separately from the other Sonnet models.
+  expect(Math.round((runCost(SONNET))! * 1e6) / 1e6).toBe(0.05)
   expect(Math.round((runCost({ ...SONNET, model: 'claude-haiku-4-5-20251001' }))! * 1e6) / 1e6).toBe(0.0265)
   expect(runCost({ ...SONNET, model: 'gpt-x' })).toBeUndefined()
   expect(runCost({ ...SONNET, model: undefined })).toBeUndefined()
@@ -156,7 +156,7 @@ test('an agent row adds up its runs cost, and one unpriced run hides the total',
   let rows = recordSpawn([], SPAWN, { agentId: 'a1' }, 0)
   rows = recordTurn(rows, { agentId: 'a1', reason: 'answer', durationMs: 1, usage: SONNET }, 1)
   rows = recordTurn(rows, { agentId: 'a1', reason: 'answer', durationMs: 1, usage: SONNET }, 2)
-  expect(Math.round((rows[0]?.costUsd)! * 1e6) / 1e6).toBe(0.106)
+  expect(Math.round((rows[0]?.costUsd)! * 1e6) / 1e6).toBe(0.1)
   rows = recordTurn(rows, { agentId: 'a1', reason: 'answer', durationMs: 1, usage: { ...SONNET, model: 'gpt-x' } }, 3)
   expect(rows[0]).toEqual(expect.objectContaining({ costUsd: undefined, isCostUnknown: true }))
   rows = recordTurn(rows, { agentId: 'a1', reason: 'answer', durationMs: 1, usage: SONNET }, 4)
@@ -164,7 +164,7 @@ test('an agent row adds up its runs cost, and one unpriced run hides the total',
 })
 
 test('only a router-* run writes a delegation line, with its cost when it can be priced', () => {
-  expect(delegationLine('router-everyday', SONNET)).toBe(`délégation · router-everyday (sonnet-5-5) · ${kTokens(41_000)} → ${kTokens(2_000)} tokens · ≈ ${formatUsd(0.053)}`)
+  expect(delegationLine('router-everyday', SONNET)).toBe(`délégation · router-everyday (sonnet-5-5) · ${kTokens(41_000)} → ${kTokens(2_000)} tokens · ≈ ${formatUsd(0.05)}`)
   expect(delegationLine('router-tiny', { ...SONNET, model: 'mystery-1' })).toBe(`délégation · router-tiny (mystery-1) · ${kTokens(41_000)} → ${kTokens(2_000)} tokens`)
   expect(delegationLine('Explore', SONNET)).toBeUndefined()
   expect(delegationLine('router-large', undefined)).toBeUndefined()

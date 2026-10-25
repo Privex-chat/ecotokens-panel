@@ -25,8 +25,8 @@ import {
 } from './agents'
 import type { InFlightTask } from './agents'
 import { cells, gradient } from './bar'
-import { callKey, ecoError, ecoLog, ecoMarkQuery, ecoQueries, ecoSavedQuery, familyLabel, groupLine, kTokens, markLine, matchMarks, message, parsePrice, parseRows, parseSaved, stamp, turnLine, MATCH_LEAD_MS } from './eco'
-import type { EcoQuery, MarkRow } from './eco'
+import { callKey, ecoError, ecoLog, ecoMarkQuery, ecoQueries, ecoSavedQuery, familyLabel, groupLine, kTokens, markLine, matchMarks, message, parseRows, parseSaved, resolveEcoRate, stamp, turnLine, MATCH_LEAD_MS } from './eco'
+import type { EcoQuery, EcoRate, MarkRow } from './eco'
 import { GAIN_PERIODS, gainCommand, jevCommand, parseGain, parseJev, purposeLabel, sparkline } from './gain'
 import { HANDOFF_LIST, HANDOFF_STATUS, handoffToggle, parseHandoff, parseHandoffList } from './handoff'
 import { WATCH_STATUS, parseLogTail, parseWatch, tailLogContents, watchStart, watchStop } from './watch'
@@ -371,20 +371,59 @@ async function matchEco($: EngineInterface) {
   }
 }
 
-// The model input price ecotokens counts avoided cost with; undefined (no cost shown) when unset or unreadable.
-async function ecoPrice($: EngineInterface) {
+type PromptUsage = {
+  model?: string
+  input_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
+
+// A manual global price remains an override. Otherwise use the model and usage
+// of this session turn, so a /model change applies to the next estimate.
+async function ecoRate($: EngineInterface, prompt?: PromptUsage): Promise<EcoRate | undefined> {
   try {
     const home = await homeDirectory($)
     if (!home) return undefined
 
-    return parsePrice(await $.fs.read(ecotokensConfigPath(home, await ecotokensPathEnvironment($))))
+    let configText: string | undefined
+    try {
+      configText = await $.fs.read(ecotokensConfigPath(home, await ecotokensPathEnvironment($)))
+    } catch {
+      // The config file is optional; a missing file must not block model-based estimates.
+    }
+
+    const [activeModel, currentUsage] = await Promise.all([
+      $.session.model().catch(() => undefined),
+      prompt ? Promise.resolve(undefined) : $.session.usage().catch(() => undefined),
+    ])
+    const model = prompt?.model ?? activeModel
+    const inputTokens = prompt
+      ? [prompt.input_tokens, prompt.cache_read_input_tokens, prompt.cache_creation_input_tokens]
+        .every(value => typeof value === 'number' && Number.isFinite(value))
+        ? prompt.input_tokens! + prompt.cache_read_input_tokens! + prompt.cache_creation_input_tokens!
+        : undefined
+      : currentUsage?.context.tokens
+
+    return resolveEcoRate(configText, model, inputTokens)
   } catch {
     return undefined
   }
 }
 
+async function ecoMarkLine($: EngineInterface, mark: EcoMark) {
+  const rate = await ecoRate($)
+
+  return markLine(mark, rate?.price, rate?.model)
+}
+
+async function ecoGroupLine($: EngineInterface, marks: EcoMark[]) {
+  const rate = await ecoRate($)
+
+  return groupLine(marks, rate?.price, rate?.model)
+}
+
 // After a turn of the main conversation: what ecotokens saved since the last one, and in the session.
-async function logEcoTurn($: EngineInterface) {
+async function logEcoTurn($: EngineInterface, prompt?: PromptUsage) {
   try {
     const home = await ecoDir($)
     if (home === undefined) return
@@ -398,7 +437,8 @@ async function logEcoTurn($: EngineInterface) {
       runQuery($, ecoSavedQuery(home, since, cwd, paths)),
       runQuery($, ecoSavedQuery(home, startedAt, cwd, paths)),
     ])
-    const line = turnLine(parseSaved(turn), parseSaved(session), await ecoPrice($))
+    const rate = await ecoRate($, prompt)
+    const line = turnLine(parseSaved(turn), parseSaved(session), rate?.price, rate?.model, rate?.configured ?? false)
     if (line) $.ui.log(line)
   } catch {
     // No line for this turn.
@@ -731,7 +771,7 @@ export const register: Register = (on, options) => {
     await refreshAgentsIfShown($)
     await refreshEcoIfShown($)
     if (live) await matchEco($)
-    if (live && !id) await logEcoTurn($)
+    if (live && !id) await logEcoTurn($, e.usage)
     if (live && id) await logDelegation($, id, e.usage)
     const shown = await read($, tab)
     if (shown === 'session' && (await isPaneOpen($))) await refreshHandoff($)
@@ -784,7 +824,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           {await next(e)}
-          <Text dimColor>{`  ${markLine(mark, await ecoPrice($))}`}</Text>
+          <Text dimColor>{`  ${await ecoMarkLine($, mark)}`}</Text>
         </Box>
       )
     })
@@ -803,7 +843,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           {await next(e)}
-          <Text dimColor>{`  ${groupLine(marks, await ecoPrice($))}`}</Text>
+          <Text dimColor>{`  ${await ecoGroupLine($, marks)}`}</Text>
         </Box>
       )
     })

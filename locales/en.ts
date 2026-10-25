@@ -167,6 +167,7 @@ export const en = {
   'saving.tokens': '{mode} · {before} → {after} {unit}',
   'transcript.saving': '−{tokens} {unit} (−{percent})',
   'transcript.sessionSaved': 'session −{tokens} {unit}',
+  'transcript.apiRate': 'API estimate ({model})',
   'jev.filterTitle': 'AI filtering of long output',
   'jev.filterSuccess': 'Jev selected the useful lines to keep',
   'jev.filterFailure': 'Failed: output was filtered without Jev',
